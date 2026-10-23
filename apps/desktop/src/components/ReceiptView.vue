@@ -4,14 +4,9 @@ import { PAYMENT_METHOD_LABELS } from '@pos/shared-types';
 import { fenToYuan, formatDateTime } from '@/utils/money';
 import { useSettingsStore } from '@/stores/settings';
 
-const props = defineProps<{ order: SaleOrderDto; cashierName?: string }>();
+const props = defineProps<{ order: SaleOrderDto; cashierName?: string; offline?: boolean }>();
 const settings = useSettingsStore();
 
-function print() {
-  window.print();
-}
-
-defineExpose({ print });
 void props;
 </script>
 
@@ -24,6 +19,7 @@ void props;
     <div class="row"><span>单号：</span><span>{{ order.orderNo }}</span></div>
     <div class="row"><span>时间：</span><span>{{ formatDateTime(order.createdAt) }}</span></div>
     <div class="row"><span>收银：</span><span>{{ cashierName ?? order.cashierName ?? '' }}</span></div>
+    <div class="offline" v-if="offline">** 离线单 · 待同步 **</div>
     <div class="divider">--------------------------------</div>
     <div v-for="item in order.items" :key="item.id" class="item">
       <div class="item-name">{{ item.productName }}<template v-if="item.spec"> {{ item.spec }}</template></div>
@@ -61,6 +57,11 @@ void props;
 .shop-info {
   text-align: center;
   font-size: 11px;
+}
+.offline {
+  text-align: center;
+  font-weight: bold;
+  margin-top: 2px;
 }
 .divider {
   white-space: nowrap;

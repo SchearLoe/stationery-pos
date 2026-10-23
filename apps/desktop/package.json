@@ -15,9 +15,18 @@
   "build": {
     "appId": "com.schearloe.stationery-pos",
     "productName": "文具店收银系统",
-    "files": ["dist/**", "dist-electron/**"],
-    "directories": { "output": "release" },
-    "win": { "target": ["nsis"] },
+    "files": [
+      "dist/**",
+      "dist-electron/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -29,6 +38,8 @@
     "@pos/shared-types": "workspace:*",
     "axios": "^1.7.9",
     "element-plus": "^2.9.0",
+    "iconv-lite": "^0.7.3",
+    "idb-keyval": "^6.3.0",
     "pinia": "^2.3.0",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"

@@ -33,10 +33,16 @@ export class SalesService {
 
   /** 创建销售单：事务内完成计价校验、扣库存、写库存流水 */
   async createSale(dto: CreateSaleOrderDto, viewer: Viewer) {
-    // 幂等：同一 clientId 只生成一单（为后续离线收银预留）
+    // 离线单：断网期间在收银端本地生成，联网后经 outbox 队列补传。
+    // 金额按「离线时点」的客户端数据入账（缓存价），不做在线时点的改价/停售强校验。
+    const isOffline = Boolean(dto.clientId && dto.offlineCreatedAt);
+    // 幂等：同一 clientId 只生成一单
     if (dto.clientId) {
       const exist = await this.prisma.saleOrder.findUnique({ where: { clientId: dto.clientId } });
       if (exist) return this.getOrder(exist.id, viewer);
+    }
+    if (isOffline && !dto.clientOrderNo) {
+      throw new BadRequestException('离线单缺少客户端单号');
     }
 
     const settings = await this.settings.get();
@@ -58,11 +64,16 @@ export class SalesService {
     const lines = dto.items.map((i) => {
       const sku = skuMap.get(i.skuId);
       if (!sku) throw new BadRequestException('商品不存在或已被删除');
-      if (sku.status !== 'ON_SALE' || sku.product.status !== 'ON_SALE') {
+      if (!isOffline && (sku.status !== 'ON_SALE' || sku.product.status !== 'ON_SALE')) {
         throw new BadRequestException(`商品「${sku.product.name}」已停售`);
       }
-      // 收银员改价下限保护
-      if (viewer.role === 'CASHIER' && sku.minPrice !== null && i.unitPrice < sku.minPrice) {
+      // 收银员改价下限保护（在线单；离线单以下单时点的校验为准）
+      if (
+        !isOffline &&
+        viewer.role === 'CASHIER' &&
+        sku.minPrice !== null &&
+        i.unitPrice < sku.minPrice
+      ) {
         throw new BadRequestException(
           `「${sku.product.name}」改价低于最低售价，请老板授权`,
         );
@@ -75,8 +86,8 @@ export class SalesService {
     if (discount < 0 || discount > total) {
       throw new BadRequestException('整单折扣金额不合法');
     }
-    // 收银员整单折扣下限
-    if (viewer.role === 'CASHIER' && discount > 0) {
+    // 收银员整单折扣下限（在线单）
+    if (!isOffline && viewer.role === 'CASHIER' && discount > 0) {
       const minPercent = settings.cashierMinDiscountPercent;
       const payPercent = Math.floor(((total - discount) / total) * 100);
       if (payPercent < minPercent) {
@@ -103,18 +114,24 @@ export class SalesService {
     }
 
     const order = await this.prisma.$transaction(async (tx) => {
-      const shift = await this.requireOpenShift(tx, viewer.id);
+      // 离线单不强制班次（断网期间可能无法开班），能挂上当前开启班次则挂
+      const shift = isOffline
+        ? await tx.shift.findFirst({
+            where: { cashierId: viewer.id, status: 'OPEN' },
+            orderBy: { openedAt: 'desc' },
+          })
+        : await this.requireOpenShift(tx, viewer.id);
 
       let created: Prisma.SaleOrderGetPayload<{ include: { items: true; payments: true } }> | null =
         null;
-      // 单号冲突重试
+      // 单号冲突重试（离线单号固定，冲突即业务错误）
       for (let attempt = 0; attempt < 3 && !created; attempt++) {
         try {
           created = await tx.saleOrder.create({
             data: {
-              orderNo: genOrderNo('S'),
+              orderNo: isOffline ? dto.clientOrderNo! : genOrderNo('S'),
               clientId: dto.clientId,
-              shiftId: shift.id,
+              shiftId: shift?.id ?? null,
               cashierId: viewer.id,
               status: 'NORMAL',
               totalAmount: total,
@@ -142,6 +159,11 @@ export class SalesService {
         } catch (e) {
           const isUniqueConflict =
             e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002';
+          if (isOffline && isUniqueConflict) {
+            throw new BadRequestException(
+              '离线单号与服务端已有单据冲突（该单可能已被同步过），请检查同步状态',
+            );
+          }
           if (!isUniqueConflict || attempt === 2) throw e;
         }
       }

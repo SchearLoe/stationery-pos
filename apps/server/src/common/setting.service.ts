@@ -11,6 +11,16 @@ export interface StoreSettingsShape {
   /** 整单折扣下限百分比（95 = 最低 95 折），收银员受此限制 */
   cashierMinDiscountPercent: number;
   cashierCanRefund: boolean;
+  /** 小票打印（驱动打印）：可选功能，默认关闭 */
+  receiptPrintingEnabled: boolean;
+  /** 收款后自动静默打印 */
+  autoPrintReceipt: boolean;
+  /** ESC/POS 直连（RAW 指令） */
+  escposDirectEnabled: boolean;
+  /** 直连目标打印机名 */
+  escposPrinterName: string;
+  /** 小票纸宽 mm */
+  receiptPaperWidth: number;
 }
 
 export const DEFAULT_SETTINGS: StoreSettingsShape = {
@@ -21,6 +31,11 @@ export const DEFAULT_SETTINGS: StoreSettingsShape = {
   allowNegativeStock: true,
   cashierMinDiscountPercent: 95,
   cashierCanRefund: true,
+  receiptPrintingEnabled: false,
+  autoPrintReceipt: false,
+  escposDirectEnabled: false,
+  escposPrinterName: '',
+  receiptPaperWidth: 58,
 };
 
 @Injectable()

@@ -125,6 +125,8 @@ export interface CreateSaleOrderInput {
   offlineCreatedAt?: number;
   /** 本地生成的 UUID，用于幂等去重；在线收银可不传 */
   clientId?: string;
+  /** 离线单客户端单号（L 前缀），与 clientId 同时出现表示离线单 */
+  clientOrderNo?: string;
 }
 
 export interface SaleItemDto {
@@ -291,4 +293,14 @@ export interface StoreSettings {
   cashierMinDiscountPercent: number;
   /** 是否允许收银员执行退货 */
   cashierCanRefund: boolean;
+  /** 启用小票打印（经 Windows 打印驱动）。可选功能，默认关闭 */
+  receiptPrintingEnabled: boolean;
+  /** 收款后自动静默打印（需先启用打印） */
+  autoPrintReceipt: boolean;
+  /** 启用 ESC/POS 直连打印（RAW 指令，使用打印机字库，不经过驱动排版） */
+  escposDirectEnabled: boolean;
+  /** ESC/POS 直连目标打印机名（本机已安装的打印机） */
+  escposPrinterName: string;
+  /** 小票纸宽（毫米），58 或 80 */
+  receiptPaperWidth: number;
 }

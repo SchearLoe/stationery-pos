@@ -6,9 +6,25 @@ declare module '*.vue' {
   export default component;
 }
 
+export interface PrinterInfo {
+  name: string;
+  displayName?: string;
+  isDefault?: boolean;
+  status?: number;
+}
+
 declare global {
   interface Window {
-    posApp?: { desktop: boolean; platform: string };
+    /** Electron preload 桥；浏览器环境不存在 */
+    posApp?: {
+      desktop: boolean;
+      platform: string;
+      print: {
+        list: () => Promise<PrinterInfo[]>;
+        html: (opts: { html: string; deviceName?: string; silent: boolean }) => Promise<void>;
+        escpos: (opts: { base64: string; printerName: string }) => Promise<void>;
+      };
+    };
   }
 }
 

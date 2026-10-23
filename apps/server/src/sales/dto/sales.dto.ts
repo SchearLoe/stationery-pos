@@ -8,6 +8,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   Min,
   MinLength,
@@ -67,6 +68,11 @@ export class CreateSaleOrderDto {
   @IsOptional()
   @IsISO8601()
   offlineCreatedAt?: string;
+
+  /** 离线单客户端单号（L 前缀 + 日期 + 4 位校验段），与 clientId 同时出现表示离线单 */
+  @IsOptional()
+  @Matches(/^L\d{8}-[0-9A-Z]{4}$/)
+  clientOrderNo?: string;
 }
 
 export class RefundItemInputDto {

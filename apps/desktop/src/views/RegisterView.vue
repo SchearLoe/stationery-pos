@@ -9,6 +9,10 @@ import { findByBarcode, listProducts, createSaleOrder, currentShift } from '@/ap
 import { useAuthStore } from '@/stores/auth';
 import { useCartStore } from '@/stores/cart';
 import { useSettingsStore } from '@/stores/settings';
+import { useSyncStore } from '@/stores/sync';
+import { cachedFindByBarcode, cachedSearch, applySaleToCache } from '@/services/catalog-cache';
+import { enqueueSale, genClientOrderNo, isNetworkError } from '@/services/outbox';
+import { printReceipt } from '@/services/print';
 import { fenToYuan, yuanToFen, money, formatTime } from '@/utils/money';
 import BossAuthDialog from '@/components/BossAuthDialog.vue';
 import ReceiptView from '@/components/ReceiptView.vue';
@@ -16,6 +20,7 @@ import ReceiptView from '@/components/ReceiptView.vue';
 const auth = useAuthStore();
 const cart = useCartStore();
 const settings = useSettingsStore();
+const sync = useSyncStore();
 const router = useRouter();
 
 const barcodeInput = ref('');
@@ -42,10 +47,16 @@ const discountValue = ref('');
 const payVisible = ref(false);
 const payLines = ref<{ method: PaymentMethod; amount: string }[]>([]);
 const lastOrder = ref<SaleOrderDto | null>(null);
+const lastOrderOffline = ref(false);
 const receiptVisible = ref(false);
 const receiptRef = ref<InstanceType<typeof ReceiptView> | null>(null);
 
 const cashLine = computed(() => payLines.value.find((l) => l.method === 'CASH'));
+const canPrint = computed(
+  () =>
+    settings.settings.receiptPrintingEnabled ||
+    (settings.settings.escposDirectEnabled && !!settings.settings.escposPrinterName),
+);
 const nonCashSum = computed(() =>
   payLines.value.filter((l) => l.method !== 'CASH').reduce((s, l) => s + yuanToFen(l.amount), 0),
 );
@@ -68,7 +79,7 @@ onMounted(() => {
   refocus();
 });
 
-// ---------- 扫码 / 搜索 ----------
+// ---------- 扫码 / 搜索（离线自动回退本地缓存） ----------
 
 async function handleInput() {
   const code = barcodeInput.value.trim();
@@ -82,13 +93,12 @@ async function handleInput() {
   refocus();
 }
 
-async function addByBarcode(code: string) {
-  const hit = await findByBarcode(code);
+function offlineHit(hit: Awaited<ReturnType<typeof cachedFindByBarcode>>, code: string): boolean {
   if (!hit || hit.productStatus !== 'ON_SALE' || hit.sku.status !== 'ON_SALE') {
     ElMessage.warning(`未找到在售商品：${code}`);
-    return;
+    return false;
   }
-  cart.add({
+  addToCart({
     skuId: hit.sku.id,
     productName: hit.productName,
     spec: hit.sku.spec,
@@ -99,11 +109,51 @@ async function addByBarcode(code: string) {
     minPrice: hit.sku.minPrice,
     stockQty: hit.sku.qty ?? 0,
   });
+  return true;
+}
+
+async function addByBarcode(code: string) {
+  try {
+    const hit = await findByBarcode(code);
+    if (!hit) {
+      // 在线但未命中：再查一次本地缓存（可能缓存尚未过期但服务端已停售等边缘情况）
+      ElMessage.warning(`未找到在售商品：${code}`);
+      return;
+    }
+    addToCart({
+      skuId: hit.sku.id,
+      productName: hit.productName,
+      spec: hit.sku.spec,
+      barcode: hit.sku.barcode,
+      unit: hit.unit,
+      unitPrice: hit.sku.retailPrice,
+      retailPrice: hit.sku.retailPrice,
+      minPrice: hit.sku.minPrice,
+      stockQty: hit.sku.qty ?? 0,
+    });
+  } catch (e) {
+    if (!isNetworkError(e)) return; // 业务错误由拦截器提示
+    const cached = await cachedFindByBarcode(code);
+    if (offlineHit(cached, code)) {
+      ElMessage.info('离线模式：已从本地缓存取价');
+    }
+  }
 }
 
 async function search(keyword: string) {
   searchKeyword.value = keyword;
-  const result = await listProducts({ keyword, pageSize: 20 });
+  let result: Awaited<ReturnType<typeof listProducts>>;
+  try {
+    result = await listProducts({ keyword, pageSize: 20 });
+  } catch (e) {
+    if (!isNetworkError(e)) return;
+    result = { total: 0, items: await cachedSearch(keyword) };
+    if (result.items.length === 0) {
+      ElMessage.info(`离线模式下没有匹配「${keyword}」的商品缓存`);
+      return;
+    }
+    ElMessage.info('离线模式：结果来自本地缓存');
+  }
   if (result.items.length === 0) {
     ElMessage.info(`没有匹配「${keyword}」的商品`);
     return;
@@ -111,7 +161,7 @@ async function search(keyword: string) {
   if (result.items.length === 1 && result.items[0]!.skus.length === 1) {
     const p = result.items[0]!;
     const sku = p.skus[0]!;
-    cart.add({
+    addToCart({
       skuId: sku.id,
       productName: p.name,
       spec: sku.spec,
@@ -126,6 +176,20 @@ async function search(keyword: string) {
   }
   searchResults.value = result.items;
   searchVisible.value = true;
+}
+
+function addToCart(item: {
+  skuId: string;
+  productName: string;
+  spec: string | null;
+  barcode: string | null;
+  unit: string;
+  unitPrice: number;
+  retailPrice: number;
+  minPrice: number | null;
+  stockQty: number;
+}) {
+  cart.add(item);
 }
 
 function pickProduct(p: (typeof searchResults.value)[number], sku: (typeof p.skus)[number]) {
@@ -245,7 +309,7 @@ function removeHold(index: number) {
 
 async function openPay() {
   if (cart.isEmpty) return;
-  // 校验班次
+  // 校验班次（网络不可用时放行，由离线结算路径处理）
   try {
     const shift = await currentShift();
     if (!shift) {
@@ -256,8 +320,9 @@ async function openPay() {
       void router.push('/shift');
       return;
     }
-  } catch {
-    return;
+  } catch (e) {
+    if (!isNetworkError(e)) return;
+    ElMessage.warning('当前离线：本单将作为离线单暂存，恢复网络后自动同步');
   }
   payLines.value = [{ method: 'CASH', amount: fenToYuan(cart.payable) }];
   payVisible.value = true;
@@ -287,17 +352,35 @@ async function confirmPay() {
         amount: l.method === 'CASH' ? Math.min(yuanToFen(l.amount), cashRemaining.value) : yuanToFen(l.amount),
       }))
       .filter((p) => p.amount > 0);
-    const order = await createSaleOrder({
+    const payload = {
       items: cart.items.map((i) => ({ skuId: i.skuId, qty: i.qty, unitPrice: i.unitPrice })),
       payments,
       discountAmount: cart.discountAmount > 0 ? cart.discountAmount : undefined,
-    });
+    };
+    let order: SaleOrderDto;
+    let offline = false;
+    try {
+      order = await createSaleOrder(payload);
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+      // 断网：转为离线单，入 outbox 待同步
+      offline = true;
+      order = await checkoutOffline(payload);
+    }
     payVisible.value = false;
     lastOrder.value = order;
+    lastOrderOffline.value = offline;
     receiptVisible.value = true;
     cart.clear();
     if (cashChange.value > 0) {
       ElMessage.success(`收款成功，找零 ¥${fenToYuan(cashChange.value)}`);
+    } else {
+      ElMessage.success(offline ? '离线收款成功，恢复网络后自动同步' : '收款成功');
+    }
+    // 自动打印（设置开启时）
+    if (settings.settings.autoPrintReceipt) {
+      const result = await printReceipt(order, auth.userName, offline);
+      if (!result.ok && settings.settings.receiptPrintingEnabled) ElMessage.warning(result.message);
     }
   } catch {
     // 拦截器已提示
@@ -307,8 +390,66 @@ async function confirmPay() {
   }
 }
 
-function printReceipt() {
-  receiptRef.value?.print();
+/** 断网结算：本地生成单据与单号，入 outbox 队列，并预扣本地缓存库存 */
+async function checkoutOffline(
+  payload: NonNullable<Parameters<typeof createSaleOrder>[0]>,
+): Promise<SaleOrderDto> {
+  const clientId = crypto.randomUUID();
+  const clientOrderNo = genClientOrderNo();
+  const now = Date.now();
+  const localOrder: SaleOrderDto = {
+    id: clientId,
+    orderNo: clientOrderNo,
+    shiftId: null,
+    cashierId: auth.user?.id ?? '',
+    cashierName: auth.userName,
+    status: 'NORMAL',
+    items: cart.items.map((i, idx) => ({
+      id: `local-${idx}`,
+      skuId: i.skuId,
+      productName: i.productName,
+      spec: i.spec,
+      barcode: i.barcode,
+      unit: i.unit,
+      qty: i.qty,
+      unitPrice: i.unitPrice,
+      subtotal: i.qty * i.unitPrice,
+      refundedQty: 0,
+    })),
+    payments: payload.payments.map((p, idx) => ({ id: `local-p${idx}`, method: p.method, amount: p.amount })),
+    totalAmount: cart.total,
+    discountAmount: cart.discountAmount,
+    payableAmount: cart.payable,
+    remark: null,
+    voidReason: null,
+    createdAt: new Date(now).toISOString(),
+  };
+  await enqueueSale({
+    clientId,
+    clientOrderNo,
+    createdAt: now,
+    offlineCreatedAt: new Date(now).toISOString(),
+    payload: {
+      ...payload,
+      clientId,
+      clientOrderNo,
+      offlineCreatedAt: now,
+      discountAmount: cart.discountAmount > 0 ? cart.discountAmount : undefined,
+    },
+    receipt: localOrder,
+    status: 'PENDING',
+    attempts: 0,
+  });
+  await applySaleToCache(cart.items.map((i) => ({ skuId: i.skuId, qty: i.qty })));
+  await sync.refresh();
+  return localOrder;
+}
+
+async function doPrint() {
+  if (!lastOrder.value) return;
+  const result = await printReceipt(lastOrder.value, auth.userName, lastOrderOffline.value);
+  if (!result.ok) ElMessage.warning(result.message);
+  else ElMessage.success(result.message);
 }
 
 // 清空购物车
@@ -524,13 +665,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown));
     <el-dialog v-model="receiptVisible" title="收款成功" width="360px">
       <div style="text-align: center">
         <p class="pay-amount ok-color">{{ lastOrder ? money(lastOrder.payableAmount) : '' }}</p>
+        <el-tag v-if="lastOrderOffline" type="warning" effect="plain">离线单 · 恢复网络后自动同步</el-tag>
       </div>
       <div v-if="lastOrder" style="max-height: 320px; overflow: auto; border: 1px dashed #ddd; padding: 4px">
-        <ReceiptView ref="receiptRef" :order="lastOrder" :cashier-name="auth.userName" />
+        <ReceiptView ref="receiptRef" :order="lastOrder" :cashier-name="auth.userName" :offline="lastOrderOffline" />
       </div>
       <template #footer>
         <el-button @click="receiptVisible = false">关闭</el-button>
-        <el-button type="primary" @click="printReceipt">打印小票</el-button>
+        <el-button v-if="canPrint" type="primary" @click="doPrint">打印小票</el-button>
+        <span v-else class="tip-text">打印未开启（系统设置 → 打印设置）</span>
       </template>
     </el-dialog>
   </div>

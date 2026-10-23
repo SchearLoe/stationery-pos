@@ -1,0 +1,17 @@
+{
+  "name": "stationery-pos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "小型文具店收银系统：Electron + Vue3 桌面收银端 / NestJS + PostgreSQL 云端",
+  "scripts": {
+    "dev:server": "pnpm --filter @pos/server start:dev",
+    "dev:desktop": "pnpm --filter @pos/desktop dev",
+    "build:server": "pnpm --filter @pos/server build",
+    "build:desktop": "pnpm --filter @pos/desktop build",
+    "db:migrate": "pnpm --filter @pos/server db:migrate",
+    "db:seed": "pnpm --filter @pos/server db:seed"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

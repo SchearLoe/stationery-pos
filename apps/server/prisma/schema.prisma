@@ -1,0 +1,275 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  BOSS
+  CASHIER
+}
+
+enum ProductStatus {
+  ON_SALE
+  OFF_SALE
+}
+
+enum PaymentMethod {
+  CASH
+  WECHAT
+  ALIPAY
+  CARD
+  OTHER
+}
+
+enum OrderStatus {
+  NORMAL
+  VOID
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
+}
+
+enum InventoryChangeType {
+  SALE
+  REFUND
+  INIT
+  ADJUST
+  VOID_BACK
+  IMPORT
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(CASHIER)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  saleOrders     SaleOrder[]
+  shifts         Shift[]
+  inventoryLogs  InventoryLog[]
+  auditLogs      AuditLog[]
+  refundOrders   RefundOrder[]
+}
+
+model Category {
+  id       String  @id @default(uuid())
+  name     String
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  sort     Int     @default(0)
+
+  products Product[]
+  createdAt DateTime @default(now())
+
+  @@index([parentId])
+}
+
+model Product {
+  id         String        @id @default(uuid())
+  name       String
+  brand      String?
+  categoryId String?
+  category   Category?     @relation(fields: [categoryId], references: [id])
+  unit       String        @default("件")
+  status     ProductStatus @default(ON_SALE)
+  remark     String?
+
+  skus      Sku[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([categoryId])
+}
+
+model Sku {
+  id          String        @id @default(uuid())
+  productId   String
+  product     Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  spec        String?
+  retailPrice Int
+  memberPrice Int?
+  minPrice    Int?
+  lastCost    Int?
+  costAvg     Int?
+  safetyStock Int           @default(0)
+  status      ProductStatus @default(ON_SALE)
+
+  barcodes      SkuBarcode[]
+  inventory     Inventory?
+  saleItems     SaleItem[]
+  inventoryLogs InventoryLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+}
+
+model SkuBarcode {
+  id      String   @id @default(uuid())
+  skuId   String
+  sku     Sku      @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  barcode String   @unique
+  createdAt DateTime @default(now())
+}
+
+model Inventory {
+  skuId     String   @id
+  sku       Sku      @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  qty       Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model InventoryLog {
+  id         String             @id @default(uuid())
+  skuId      String
+  sku        Sku                @relation(fields: [skuId], references: [id])
+  type       InventoryChangeType
+  change     Int
+  after      Int
+  refNo      String?
+  note       String?
+  operatorId String?
+  operator   User?              @relation(fields: [operatorId], references: [id])
+  createdAt  DateTime           @default(now())
+
+  @@index([skuId, createdAt])
+  @@index([createdAt])
+}
+
+model Shift {
+  id           String      @id @default(uuid())
+  cashierId    String
+  cashier      User        @relation(fields: [cashierId], references: [id])
+  status       ShiftStatus @default(OPEN)
+  openedAt     DateTime    @default(now())
+  closedAt     DateTime?
+  expectedCash Int?
+  countedCash  Int?
+  diff         Int?
+  note         String?
+
+  saleOrders SaleOrder[]
+
+  @@index([cashierId, status])
+}
+
+model SaleOrder {
+  id               String      @id @default(uuid())
+  orderNo          String      @unique
+  clientId         String?     @unique
+  shiftId          String?
+  shift            Shift?      @relation(fields: [shiftId], references: [id])
+  cashierId        String
+  cashier          User        @relation(fields: [cashierId], references: [id])
+  status           OrderStatus @default(NORMAL)
+  totalAmount      Int
+  discountAmount   Int         @default(0)
+  payableAmount    Int
+  remark           String?
+  voidReason       String?
+  voidById         String?
+  offlineCreatedAt DateTime?
+  createdAt        DateTime    @default(now())
+
+  items    SaleItem[]
+  payments Payment[]
+  refunds  RefundOrder[]
+
+  @@index([createdAt])
+  @@index([shiftId])
+  @@index([cashierId])
+}
+
+model SaleItem {
+  id           String @id @default(uuid())
+  orderId      String
+  order        SaleOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  skuId        String
+  sku          Sku       @relation(fields: [skuId], references: [id])
+  productName  String
+  spec         String?
+  barcode      String?
+  unit         String
+  qty          Int
+  unitPrice    Int
+  subtotal     Int
+  costSnapshot Int?
+  refundedQty  Int       @default(0)
+
+  refundItems RefundItem[]
+
+  @@index([orderId])
+  @@index([skuId])
+}
+
+model Payment {
+  id      String        @id @default(uuid())
+  orderId String
+  order   SaleOrder     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method  PaymentMethod
+  amount  Int
+
+  @@index([orderId])
+}
+
+model RefundOrder {
+  id        String        @id @default(uuid())
+  refundNo  String        @unique
+  orderId   String
+  order     SaleOrder     @relation(fields: [orderId], references: [id])
+  shiftId   String?
+  cashierId String
+  cashier   User          @relation(fields: [cashierId], references: [id])
+  amount    Int
+  reason    String
+  method    PaymentMethod
+  createdAt DateTime      @default(now())
+
+  items RefundItem[]
+
+  @@index([orderId])
+  @@index([createdAt])
+}
+
+model RefundItem {
+  id         String    @id @default(uuid())
+  refundId   String
+  refund     RefundOrder @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  saleItemId String
+  saleItem   SaleItem    @relation(fields: [saleItemId], references: [id])
+  skuId      String
+  qty        Int
+  unitPrice  Int
+  subtotal   Int
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  target    String?
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

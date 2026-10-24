@@ -92,7 +92,7 @@ export interface ProductUpsertInput {
 
 // ---------- 收银 ----------
 
-export type PaymentMethod = 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER';
+export type PaymentMethod = 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER' | 'BALANCE';
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   CASH: '现金',
@@ -100,7 +100,11 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   ALIPAY: '支付宝',
   CARD: '刷卡',
   OTHER: '其他',
+  BALANCE: '储值余额',
 };
+
+/** 收银结算可选的人工支付方式（储值余额需挂会员后单独使用，不在此列表） */
+export const POS_PAY_METHODS: PaymentMethod[] = ['CASH', 'WECHAT', 'ALIPAY', 'CARD', 'OTHER'];
 
 export interface SaleItemInput {
   skuId: string;
@@ -120,6 +124,10 @@ export interface CreateSaleOrderInput {
   payments: PaymentInput[];
   /** 整单折扣金额（分），可选 */
   discountAmount?: number;
+  /** 挂单会员 ID：应用会员价、可余额支付/积分抵扣 */
+  memberId?: string;
+  /** 使用积分抵扣的数量（分/积分价值折算），可选 */
+  usePoints?: number;
   remark?: string | null;
   /** 离线创建时间（毫秒时间戳），在线收银不传 */
   offlineCreatedAt?: number;
@@ -155,11 +163,16 @@ export interface SaleOrderDto {
   shiftId: string | null;
   cashierId: string;
   cashierName?: string;
+  memberId?: string | null;
+  memberName?: string | null;
   status: 'NORMAL' | 'VOID';
   items: SaleItemDto[];
   payments: PaymentDto[];
   totalAmount: number;
   discountAmount: number;
+  pointsDiscount?: number;
+  pointsUsed?: number;
+  pointsEarned?: number;
   payableAmount: number;
   remark: string | null;
   voidReason: string | null;
@@ -247,7 +260,9 @@ export type InventoryChangeType =
   | 'INIT'
   | 'ADJUST'
   | 'VOID_BACK'
-  | 'IMPORT';
+  | 'IMPORT'
+  | 'PURCHASE'
+  | 'STOCKTAKE';
 
 export const INVENTORY_CHANGE_LABELS: Record<InventoryChangeType, string> = {
   SALE: '销售出库',
@@ -256,6 +271,8 @@ export const INVENTORY_CHANGE_LABELS: Record<InventoryChangeType, string> = {
   ADJUST: '库存调整',
   VOID_BACK: '作废回补',
   IMPORT: '批量导入',
+  PURCHASE: '采购入库',
+  STOCKTAKE: '盘点调整',
 };
 
 export interface InventoryLogDto {
@@ -303,4 +320,211 @@ export interface StoreSettings {
   escposPrinterName: string;
   /** 小票纸宽（毫米），58 或 80 */
   receiptPaperWidth: number;
+  /** 会员积分规则：每消费 1 元获得积分数（向下取整），0 = 不送积分 */
+  memberPointsPerYuan: number;
+  /** 会员积分规则：1 积分抵扣金额（分），默认 1 分 = 0.01 元 */
+  memberPointValueCent: number;
+}
+
+// ---------- 二期：采购 / 应付 ----------
+
+export type PurchaseStatus = 'DRAFT' | 'RECEIVED' | 'CANCELLED';
+
+export const PURCHASE_STATUS_LABELS: Record<PurchaseStatus, string> = {
+  DRAFT: '待入库',
+  RECEIVED: '已入库',
+  CANCELLED: '已取消',
+};
+
+export interface SupplierDto {
+  id: string;
+  name: string;
+  phone: string | null;
+  contact: string | null;
+  remark: string | null;
+  active: boolean;
+  /** 应付余额（分）：已入库采购额 - 已付款，列表接口附带 */
+  payable?: number;
+  orderCount?: number;
+}
+
+export interface PurchaseItemDto {
+  id: string;
+  skuId: string;
+  productName: string;
+  spec: string | null;
+  barcode: string | null;
+  unit: string;
+  qty: number;
+  unitCost: number;
+  subtotal: number;
+}
+
+export interface PurchasePaymentDto {
+  id: string;
+  amount: number;
+  method: PaymentMethod;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface PurchaseOrderDto {
+  id: string;
+  orderNo: string;
+  supplierId: string;
+  supplierName?: string;
+  status: PurchaseStatus;
+  totalAmount: number;
+  paidAmount: number;
+  payableAmount: number;
+  remark: string | null;
+  operatorName?: string | null;
+  receivedAt: string | null;
+  createdAt: string;
+  items?: PurchaseItemDto[];
+  payments?: PurchasePaymentDto[];
+}
+
+export interface CreatePurchaseInput {
+  supplierId: string;
+  remark?: string | null;
+  items: { skuId: string; qty: number; unitCost: number }[];
+}
+
+export interface PayableSummaryDto {
+  supplierId: string;
+  supplierName: string;
+  phone: string | null;
+  /** 已入库采购总额 */
+  receivedTotal: number;
+  paidTotal: number;
+  /** 应付余额 */
+  payable: number;
+  orderCount: number;
+}
+
+// ---------- 二期：盘点任务 ----------
+
+export type StocktakeStatus = 'OPEN' | 'APPLIED' | 'CANCELLED';
+
+export const STOCKTAKE_STATUS_LABELS: Record<StocktakeStatus, string> = {
+  OPEN: '盘点中',
+  APPLIED: '已应用',
+  CANCELLED: '已取消',
+};
+
+export interface StocktakeItemDto {
+  id: string;
+  skuId: string;
+  productName: string;
+  spec: string | null;
+  barcode?: string | null;
+  unit: string;
+  snapshotQty: number;
+  countedQty: number | null;
+  /** countedQty - snapshotQty，未盘为 null */
+  diff: number | null;
+}
+
+export interface StocktakeTaskDto {
+  id: string;
+  taskNo: string;
+  status: StocktakeStatus;
+  scopeCategoryId: string | null;
+  scopeCategoryName?: string | null;
+  note: string | null;
+  creatorName?: string | null;
+  appliedAt: string | null;
+  createdAt: string;
+  itemCount?: number;
+  countedCount?: number;
+  diffCount?: number;
+  items?: StocktakeItemDto[];
+}
+
+// ---------- 二期：会员储值 / 积分 ----------
+
+export interface MemberDto {
+  id: string;
+  code: string;
+  name: string;
+  phone: string | null;
+  /** 储值余额（分） */
+  balance: number;
+  points: number;
+  active: boolean;
+  remark: string | null;
+  createdAt: string;
+}
+
+export type MemberTxnType = 'RECHARGE' | 'CONSUME' | 'REFUND' | 'EARN' | 'REDEEM' | 'ADJUST';
+
+export const MEMBER_TXN_LABELS: Record<MemberTxnType, string> = {
+  RECHARGE: '充值',
+  CONSUME: '消费',
+  REFUND: '退款返还',
+  EARN: '积分获得',
+  REDEEM: '积分抵扣',
+  ADJUST: '人工调整',
+};
+
+export interface MemberTxnDto {
+  id: string;
+  type: MemberTxnType;
+  amount: number;
+  balanceAfter: number;
+  pointsChange: number;
+  pointsAfter: number;
+  refNo: string | null;
+  note: string | null;
+  operatorName?: string | null;
+  createdAt: string;
+}
+
+// ---------- 二期：支出记账 / 月结 ----------
+
+export type ExpenseCategory = 'RESTOCK' | 'RENT' | 'UTILITIES' | 'PAYROLL' | 'FREIGHT' | 'OTHER';
+
+export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
+  RESTOCK: '补货采购',
+  RENT: '房租',
+  UTILITIES: '水电物业',
+  PAYROLL: '工资',
+  FREIGHT: '运费',
+  OTHER: '其他',
+};
+
+export interface ExpenseDto {
+  id: string;
+  date: string;
+  category: ExpenseCategory;
+  amount: number;
+  title: string;
+  note: string | null;
+  operatorName?: string | null;
+  createdAt: string;
+}
+
+export interface MonthlyStatementDto {
+  /** 月份，YYYY-MM */
+  month: string;
+  /** 销售实收（NORMAL 单 payable 合计） */
+  salesAmount: number;
+  refundAmount: number;
+  netSalesAmount: number;
+  orderCount: number;
+  /** 销售成本（按下单时点成本快照估算，扣除退货） */
+  cogsAmount: number;
+  /** 毛利 = 净销售 - 销售成本 */
+  grossProfit: number;
+  /** 本月入库的采购总额 / 已付款额 */
+  purchaseReceivedAmount: number;
+  purchasePaidAmount: number;
+  /** 杂项支出（不含采购付款） */
+  expenseTotal: number;
+  expensesByCategory: { category: ExpenseCategory; amount: number }[];
+  /** 会员充值收入（本金+赠送） */
+  memberRechargeAmount: number;
+  /** 净利估算 = 毛利 - 杂项支出 */
+  netProfitEstimate: number;
 }

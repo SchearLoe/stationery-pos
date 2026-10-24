@@ -1,9 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ReportsService } from './reports.service';
+import { LedgerModule } from '../ledger/ledger.module';
 import { ReportsController } from './reports.controller';
+import { ReportsService } from './reports.service';
+import { ExportController } from './export.controller';
 
 @Module({
+  imports: [LedgerModule],
+  controllers: [ReportsController, ExportController],
   providers: [ReportsService],
-  controllers: [ReportsController],
 })
 export class ReportsModule {}

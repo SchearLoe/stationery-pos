@@ -36,6 +36,10 @@ export class SalesService {
     // 离线单：断网期间在收银端本地生成，联网后经 outbox 队列补传。
     // 金额按「离线时点」的客户端数据入账（缓存价），不做在线时点的改价/停售强校验。
     const isOffline = Boolean(dto.clientId && dto.offlineCreatedAt);
+    // 会员储值/积分依赖服务端余额强一致，离线单一律拒绝
+    if (isOffline && (dto.memberId || dto.usePoints || dto.payments.some((p) => p.method === 'BALANCE'))) {
+      throw new BadRequestException('离线单暂不支持会员价 / 储值支付 / 积分抵扣');
+    }
     // 幂等：同一 clientId 只生成一单
     if (dto.clientId) {
       const exist = await this.prisma.saleOrder.findUnique({ where: { clientId: dto.clientId } });
@@ -43,6 +47,13 @@ export class SalesService {
     }
     if (isOffline && !dto.clientOrderNo) {
       throw new BadRequestException('离线单缺少客户端单号');
+    }
+
+    const member = dto.memberId
+      ? await this.prisma.member.findUnique({ where: { id: dto.memberId } })
+      : null;
+    if (dto.memberId && (!member || !member.active)) {
+      throw new BadRequestException('会员不存在或已停用');
     }
 
     const settings = await this.settings.get();
@@ -67,16 +78,16 @@ export class SalesService {
       if (!isOffline && (sku.status !== 'ON_SALE' || sku.product.status !== 'ON_SALE')) {
         throw new BadRequestException(`商品「${sku.product.name}」已停售`);
       }
-      // 收银员改价下限保护（在线单；离线单以下单时点的校验为准）
-      if (
-        !isOffline &&
-        viewer.role === 'CASHIER' &&
-        sku.minPrice !== null &&
-        i.unitPrice < sku.minPrice
-      ) {
-        throw new BadRequestException(
-          `「${sku.product.name}」改价低于最低售价，请老板授权`,
-        );
+      // 收银员改价下限保护（在线单；离线单以下单时点的校验为准）。
+      // 挂会员时会员价（老板设置）视为授权价：下限取 最低售价 与 会员价 的较小者
+      if (!isOffline && viewer.role === 'CASHIER') {
+        let floor: number | null = sku.minPrice;
+        if (member && sku.memberPrice !== null) {
+          floor = floor === null ? sku.memberPrice : Math.min(floor, sku.memberPrice);
+        }
+        if (floor !== null && i.unitPrice < floor) {
+          throw new BadRequestException(`「${sku.product.name}」改价低于最低售价，请老板授权`);
+        }
       }
       const subtotal = i.qty * i.unitPrice;
       total += subtotal;
@@ -86,7 +97,7 @@ export class SalesService {
     if (discount < 0 || discount > total) {
       throw new BadRequestException('整单折扣金额不合法');
     }
-    // 收银员整单折扣下限（在线单）
+    // 收银员整单折扣下限（在线单；积分抵扣是会员权益，不占人工折扣限额）
     if (!isOffline && viewer.role === 'CASHIER' && discount > 0) {
       const minPercent = settings.cashierMinDiscountPercent;
       const payPercent = Math.floor(((total - discount) / total) * 100);
@@ -94,10 +105,35 @@ export class SalesService {
         throw new BadRequestException(`整单折扣低于下限 ${minPercent}%，请老板授权`);
       }
     }
-    const payable = total - discount;
+    // 积分抵扣：数量以会员可用积分为上限，金额按设置的积分单价折算
+    let pointsUsed = 0;
+    let pointsDiscount = 0;
+    if (dto.usePoints && dto.usePoints > 0) {
+      if (!member) throw new BadRequestException('未挂会员不能使用积分');
+      if (dto.usePoints > member.points) {
+        throw new BadRequestException(`积分不足（可用 ${member.points}）`);
+      }
+      pointsUsed = dto.usePoints;
+      pointsDiscount = pointsUsed * settings.memberPointValueCent;
+      if (discount + pointsDiscount > total) {
+        throw new BadRequestException('积分抵扣金额超过订单金额');
+      }
+    }
+    // 挂会员赠送积分（按实收金额计算，退货不回退赠送积分）
+    const pointsEarned =
+      member && settings.memberPointsPerYuan > 0
+        ? Math.floor(((total - discount - pointsDiscount) / 100) * settings.memberPointsPerYuan)
+        : 0;
+    const payable = total - discount - pointsDiscount;
     const paid = dto.payments.reduce((s, p) => s + p.amount, 0);
     if (paid !== payable) {
       throw new BadRequestException(`支付金额（${paid}）与应付金额（${payable}）不一致`);
+    }
+    const balancePaid = dto.payments
+      .filter((p) => p.method === 'BALANCE')
+      .reduce((s, p) => s + p.amount, 0);
+    if (balancePaid > 0 && !member) {
+      throw new BadRequestException('未挂会员不能使用储值支付');
     }
 
     // 库存预检（是否允许负库存）
@@ -133,6 +169,10 @@ export class SalesService {
               clientId: dto.clientId,
               shiftId: shift?.id ?? null,
               cashierId: viewer.id,
+              memberId: member?.id ?? null,
+              pointsUsed,
+              pointsEarned,
+              pointsDiscount,
               status: 'NORMAL',
               totalAmount: total,
               discountAmount: discount,
@@ -189,6 +229,37 @@ export class SalesService {
           },
         });
       }
+
+      // 会员账户记账：扣储值余额、积分变动（抵扣-使用 / 消费+赠送）
+      if (member) {
+        const pointsChange = pointsEarned - pointsUsed;
+        if (balancePaid > 0 || pointsChange !== 0) {
+          const fresh = await tx.member.findUnique({ where: { id: member.id } });
+          if (!fresh || !fresh.active) throw new BadRequestException('会员不存在或已停用');
+          if (fresh.balance < balancePaid) {
+            throw new BadRequestException(`会员储值余额不足（剩 ${fresh.balance}）`);
+          }
+          const updated = await tx.member.update({
+            where: { id: member.id },
+            data: {
+              ...(balancePaid > 0 ? { balance: { decrement: balancePaid } } : {}),
+              ...(pointsChange !== 0 ? { points: { increment: pointsChange } } : {}),
+            },
+          });
+          await tx.memberTxn.create({
+            data: {
+              memberId: member.id,
+              type: 'CONSUME',
+              amount: -balancePaid,
+              balanceAfter: updated.balance,
+              pointsChange,
+              pointsAfter: updated.points,
+              refNo: created.orderNo,
+              operatorId: viewer.id,
+            },
+          });
+        }
+      }
       return created;
     });
 
@@ -197,6 +268,14 @@ export class SalesService {
       items: lines.length,
     });
     return this.getOrder(order.id, viewer);
+  }
+
+  /** 订单响应序列化：member 对象拍平为 memberName/memberCode 便于前端直用 */
+  private serializeOrder<T extends { member?: { name: string; code: string } | null }>(
+    order: T,
+  ) {
+    const { member, ...rest } = order as { member?: { name: string; code: string } | null };
+    return { ...rest, memberName: member?.name ?? null, memberCode: member?.code ?? null };
   }
 
   async listOrders(viewer: Viewer, q: ListOrdersQuery) {
@@ -218,6 +297,7 @@ export class SalesService {
         where,
         include: {
           cashier: { select: { name: true } },
+          member: { select: { name: true, code: true } },
           items: true,
           payments: true,
         },
@@ -226,37 +306,50 @@ export class SalesService {
         take: pageSize,
       }),
     ]);
-    return { total, page, pageSize, items: orders };
+    return { total, page, pageSize, items: orders.map((o) => this.serializeOrder(o)) };
   }
 
   async getOrder(id: string, viewer: Viewer) {
     const order = await this.prisma.saleOrder.findUnique({
       where: { id },
-      include: { cashier: { select: { name: true } }, items: true, payments: true },
+      include: {
+        cashier: { select: { name: true } },
+        member: { select: { name: true, code: true } },
+        items: true,
+        payments: true,
+      },
     });
     if (!order) throw new NotFoundException('订单不存在');
     if (viewer.role !== 'BOSS' && order.cashierId !== viewer.id) {
       throw new ForbiddenException('无权查看他人订单');
     }
-    return order;
+    return this.serializeOrder(order);
   }
 
   async findByOrderNo(orderNo: string, viewer: Viewer) {
     const order = await this.prisma.saleOrder.findUnique({
       where: { orderNo },
-      include: { cashier: { select: { name: true } }, items: true, payments: true },
+      include: {
+        cashier: { select: { name: true } },
+        member: { select: { name: true, code: true } },
+        items: true,
+        payments: true,
+      },
     });
     if (!order) throw new NotFoundException('未找到该单号');
     if (viewer.role !== 'BOSS' && order.cashierId !== viewer.id) {
       throw new ForbiddenException('无权查看他人订单');
     }
-    return order;
+    return this.serializeOrder(order);
   }
 
-  /** 整单作废（红冲）：仅老板，回补未退库存 */
+  /** 整单作废（红冲）：仅老板，回补未退库存、返还会员储值与积分 */
   async voidOrder(id: string, reason: string, viewer: Viewer) {
     if (viewer.role !== 'BOSS') throw new ForbiddenException('仅老板可作废订单');
-    const order = await this.prisma.saleOrder.findUnique({ where: { id }, include: { items: true } });
+    const order = await this.prisma.saleOrder.findUnique({
+      where: { id },
+      include: { items: true, payments: true },
+    });
     if (!order) throw new NotFoundException('订单不存在');
     if (order.status === 'VOID') throw new BadRequestException('订单已作废');
 
@@ -284,6 +377,38 @@ export class SalesService {
             operatorId: viewer.id,
           },
         });
+      }
+      // 会员权益回冲：储值原额返还；使用积分返还、赠送积分扣回
+      if (order.memberId) {
+        const balancePaid = order.payments
+          .filter((p) => p.method === 'BALANCE')
+          .reduce((s, p) => s + p.amount, 0);
+        const pointsChange = order.pointsUsed - order.pointsEarned;
+        if (balancePaid > 0 || pointsChange !== 0) {
+          const updated = await tx.member.update({
+            where: { id: order.memberId },
+            data: {
+              ...(balancePaid > 0 ? { balance: { increment: balancePaid } } : {}),
+              ...(pointsChange !== 0 ? { points: { increment: pointsChange } } : {}),
+            },
+          });
+          if (updated.points < 0) {
+            throw new BadRequestException('会员积分不足以扣回该单赠送的积分（可能已消费），请先调整会员积分');
+          }
+          await tx.memberTxn.create({
+            data: {
+              memberId: order.memberId,
+              type: 'REFUND',
+              amount: balancePaid,
+              balanceAfter: updated.balance,
+              pointsChange,
+              pointsAfter: updated.points,
+              refNo: order.orderNo,
+              note: `整单作废返还：${reason}`,
+              operatorId: viewer.id,
+            },
+          });
+        }
       }
     });
     await this.audit.log(viewer.id, 'sale.void', order.orderNo, { reason });
@@ -314,6 +439,11 @@ export class SalesService {
       return { item, qty: r.qty, subtotal: r.qty * item.unitPrice };
     });
     const amount = lines.reduce((s, l) => s + l.subtotal, 0);
+    const method =
+      dto.method ?? (order.payments.length === 1 ? order.payments[0].method : 'CASH');
+    if (method === 'BALANCE' && !order.memberId) {
+      throw new BadRequestException('原单未挂会员，储值余额不能退款，请选择其他方式');
+    }
 
     const refund = await this.prisma.$transaction(async (tx) => {
       const shift = await this.requireOpenShift(tx, viewer.id);
@@ -328,8 +458,7 @@ export class SalesService {
               cashierId: viewer.id,
               amount,
               reason: dto.reason,
-              method:
-                dto.method ?? (order.payments.length === 1 ? order.payments[0].method : 'CASH'),
+              method,
               items: {
                 create: lines.map((l) => ({
                   saleItemId: l.item.id,
@@ -368,6 +497,26 @@ export class SalesService {
             after: row.qty,
             refNo: created.refundNo,
             note: `退货：${dto.reason}`,
+            operatorId: viewer.id,
+          },
+        });
+      }
+
+      // 退回储值余额：金额回到会员卡上
+      if (method === 'BALANCE' && order.memberId) {
+        const updated = await tx.member.update({
+          where: { id: order.memberId },
+          data: { balance: { increment: amount } },
+        });
+        await tx.memberTxn.create({
+          data: {
+            memberId: order.memberId,
+            type: 'REFUND',
+            amount,
+            balanceAfter: updated.balance,
+            pointsAfter: updated.points,
+            refNo: created.refundNo,
+            note: `退货返还：${dto.reason}`,
             operatorId: viewer.id,
           },
         });

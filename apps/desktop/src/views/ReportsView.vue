@@ -1,10 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { reportDaily, reportStockValue, reportSummary, reportTopProducts } from '@/api';
+import { ElMessage } from 'element-plus';
+import { Download } from '@element-plus/icons-vue';
+import { PAYMENT_METHOD_LABELS } from '@pos/shared-types';
+import type { PaymentMethod } from '@pos/shared-types';
+import {
+  exportDailyCsv,
+  exportInventoryCsv,
+  exportOrdersCsv,
+  exportSummaryCsv,
+  exportTopProductsCsv,
+  reportDaily,
+  reportStockValue,
+  reportSummary,
+  reportTopProducts,
+} from '@/api';
 import { fenToYuan } from '@/utils/money';
 
 const range = ref<[Date, Date]>(defaultRange());
 const loading = ref(false);
+const exporting = ref(false);
 
 const summary = ref<Awaited<ReturnType<typeof reportSummary>> | null>(null);
 const daily = ref<Awaited<ReturnType<typeof reportDaily>>>([]);
@@ -18,18 +33,20 @@ function defaultRange(): [Date, Date] {
   return [start, end];
 }
 
-function iso(d: Date): string {
-  return d.toISOString();
-}
+const rangeStr = computed<[string, string]>(() => {
+  const [from, to] = range.value;
+  return [
+    new Date(from.getFullYear(), from.getMonth(), from.getDate()).toISOString(),
+    new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59).toISOString(),
+  ];
+});
 
 const dailyMax = computed(() => Math.max(1, ...daily.value.map((d) => d.sales)));
 
 async function load() {
   loading.value = true;
   try {
-    const [from, to] = range.value;
-    const fromStr = iso(new Date(from.getFullYear(), from.getMonth(), from.getDate()));
-    const toStr = iso(new Date(to.getFullYear(), to.getMonth(), to.getDate(), 23, 59, 59));
+    const [fromStr, toStr] = rangeStr.value;
     const [s, d, t, v] = await Promise.all([
       reportSummary(fromStr, toStr),
       reportDaily(fromStr, toStr),
@@ -42,6 +59,21 @@ async function load() {
     stock.value = v;
   } finally {
     loading.value = false;
+  }
+}
+
+async function doExport(kind: 'summary' | 'orders' | 'top' | 'daily' | 'inventory') {
+  exporting.value = true;
+  try {
+    const [fromStr, toStr] = rangeStr.value;
+    if (kind === 'summary') await exportSummaryCsv(fromStr, toStr);
+    else if (kind === 'orders') await exportOrdersCsv(fromStr, toStr);
+    else if (kind === 'top') await exportTopProductsCsv(fromStr, toStr);
+    else if (kind === 'daily') await exportDailyCsv(fromStr, toStr);
+    else await exportInventoryCsv();
+    ElMessage.success('CSV 已导出（Excel 可直接打开）');
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -60,6 +92,19 @@ onMounted(load);
           :disabled-date="(d: Date) => d > new Date()"
         />
         <el-button type="primary" @click="load">查询</el-button>
+        <div class="spacer" />
+        <el-dropdown :loading="exporting" @command="doExport">
+          <el-button :icon="Download" :loading="exporting">导出 CSV</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="summary">销售汇总</el-dropdown-item>
+              <el-dropdown-item command="daily">每日销售</el-dropdown-item>
+              <el-dropdown-item command="top">商品销量排行</el-dropdown-item>
+              <el-dropdown-item command="orders">销售明细</el-dropdown-item>
+              <el-dropdown-item command="inventory" divided>库存快照</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </el-card>
 
@@ -102,7 +147,7 @@ onMounted(load);
       <el-card>
         <template #header>支付方式分布</template>
         <el-descriptions :column="1" border size="small" v-if="summary">
-          <el-descriptions-item v-for="m in summary.byMethod" :key="m.method" :label="m.method">
+          <el-descriptions-item v-for="m in summary.byMethod" :key="m.method" :label="PAYMENT_METHOD_LABELS[m.method as PaymentMethod] ?? m.method">
             ¥{{ fenToYuan(m.amount) }}（{{ m.count }} 笔）
           </el-descriptions-item>
           <el-descriptions-item v-if="summary.byMethod.length === 0">该区间无数据</el-descriptions-item>

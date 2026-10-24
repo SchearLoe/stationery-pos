@@ -11,6 +11,8 @@ export interface CartItem {
   unitPrice: number;
   retailPrice: number;
   minPrice: number | null;
+  /** 会员价（分），挂会员后一键应用 */
+  memberPrice?: number | null;
   stockQty: number;
 }
 

@@ -38,7 +38,7 @@ export function validateBarcode(barcode: string): void {
 }
 
 /** 生成单号：前缀 + yyyyMMdd + 4位当日随机（冲突由唯一约束兜底重试） */
-export function genOrderNo(prefix: 'S' | 'R'): string {
+export function genOrderNo(prefix: 'S' | 'R' | 'P' | 'T'): string {
   const d = new Date();
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
   const rand = Math.floor(Math.random() * 0x10000)
@@ -46,4 +46,11 @@ export function genOrderNo(prefix: 'S' | 'R'): string {
     .toUpperCase()
     .padStart(4, '0');
   return `${prefix}${ymd}-${rand}`;
+}
+
+/** 生成会员码：M + 6 位数字（做会员卡号/扫码识别，唯一约束兜底重试） */
+export function genMemberCode(): string {
+  return `M${Math.floor(Math.random() * 1_000_000)
+    .toString()
+    .padStart(6, '0')}`;
 }

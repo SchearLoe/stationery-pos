@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { SwitchButton, Coin, ShoppingCart, Goods, Box, RefreshLeft, Clock, DataAnalysis, UserFilled, Setting } from '@element-plus/icons-vue';
+import { SwitchButton, Coin, ShoppingCart, Goods, Box, RefreshLeft, Clock, DataAnalysis, UserFilled, Setting, Van, DocumentChecked, Avatar, Wallet } from '@element-plus/icons-vue';
 import { useAuthStore } from '@/stores/auth';
 import { useSettingsStore } from '@/stores/settings';
 import { useSyncStore } from '@/stores/sync';
@@ -59,6 +59,10 @@ const menuItems = computed(() => {
   if (auth.isBoss) {
     items.push(
       { path: '/products', label: '商品管理', icon: Goods },
+      { path: '/purchases', label: '采购应付', icon: Van },
+      { path: '/stocktakes', label: '盘点任务', icon: DocumentChecked },
+      { path: '/members', label: '会员储值', icon: Avatar },
+      { path: '/ledger', label: '账目月结', icon: Wallet },
       { path: '/reports', label: '经营分析', icon: DataAnalysis },
       { path: '/users', label: '账号管理', icon: UserFilled },
       { path: '/settings', label: '系统设置', icon: Setting },

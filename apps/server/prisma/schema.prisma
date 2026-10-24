@@ -23,6 +23,7 @@ enum PaymentMethod {
   ALIPAY
   CARD
   OTHER
+  BALANCE
 }
 
 enum OrderStatus {
@@ -42,6 +43,38 @@ enum InventoryChangeType {
   ADJUST
   VOID_BACK
   IMPORT
+  PURCHASE
+  STOCKTAKE
+}
+
+enum PurchaseStatus {
+  DRAFT
+  RECEIVED
+  CANCELLED
+}
+
+enum StocktakeStatus {
+  OPEN
+  APPLIED
+  CANCELLED
+}
+
+enum MemberTxnType {
+  RECHARGE
+  CONSUME
+  REFUND
+  EARN
+  REDEEM
+  ADJUST
+}
+
+enum ExpenseCategory {
+  RESTOCK
+  RENT
+  UTILITIES
+  PAYROLL
+  FREIGHT
+  OTHER
 }
 
 model User {
@@ -59,6 +92,10 @@ model User {
   inventoryLogs  InventoryLog[]
   auditLogs      AuditLog[]
   refundOrders   RefundOrder[]
+  purchaseOrders PurchaseOrder[] @relation("PurchaseOrders")
+  stocktakeTasks StocktakeTask[] @relation("StocktakeCreator")
+  memberTxns     MemberTxn[]     @relation("MemberTxnOperator")
+  expenses       Expense[]       @relation("ExpenseOperator")
 }
 
 model Category {
@@ -70,6 +107,7 @@ model Category {
   sort     Int     @default(0)
 
   products Product[]
+  stocktakeTasks StocktakeTask[]
   createdAt DateTime @default(now())
 
   @@index([parentId])
@@ -110,6 +148,8 @@ model Sku {
   inventory     Inventory?
   saleItems     SaleItem[]
   inventoryLogs InventoryLog[]
+  purchaseItems PurchaseItem[]
+  stocktakeItems StocktakeItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -174,9 +214,17 @@ model SaleOrder {
   shift            Shift?      @relation(fields: [shiftId], references: [id])
   cashierId        String
   cashier          User        @relation(fields: [cashierId], references: [id])
+  memberId         String?
+  member           Member?     @relation("MemberOrders", fields: [memberId], references: [id])
   status           OrderStatus @default(NORMAL)
   totalAmount      Int
   discountAmount   Int         @default(0)
+  /** 积分抵扣金额（分），pointsUsed × 积分价值，入账时点快照 */
+  pointsDiscount   Int         @default(0)
+  /** 本单使用的积分数 */
+  pointsUsed       Int         @default(0)
+  /** 本单获得的积分数（按实收金额计算） */
+  pointsEarned     Int         @default(0)
   payableAmount    Int
   remark           String?
   voidReason       String?
@@ -191,6 +239,7 @@ model SaleOrder {
   @@index([createdAt])
   @@index([shiftId])
   @@index([cashierId])
+  @@index([memberId])
 }
 
 model SaleItem {
@@ -266,6 +315,163 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// ---------- 二期：采购 / 应付 ----------
+
+model Supplier {
+  id        String   @id @default(uuid())
+  name      String
+  phone     String?
+  contact   String?
+  remark    String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseOrder {
+  id          String        @id @default(uuid())
+  orderNo     String        @unique
+  supplierId  String
+  supplier    Supplier      @relation(fields: [supplierId], references: [id])
+  status      PurchaseStatus @default(DRAFT)
+  totalAmount Int
+  remark      String?
+  operatorId  String?
+  operator    User?         @relation("PurchaseOrders", fields: [operatorId], references: [id])
+  receivedAt  DateTime?
+  createdAt   DateTime      @default(now())
+
+  items    PurchaseItem[]
+  payments PurchasePayment[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PurchaseItem {
+  id          String        @id @default(uuid())
+  orderId     String
+  order       PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  skuId       String
+  sku         Sku           @relation(fields: [skuId], references: [id])
+  productName String
+  spec        String?
+  barcode     String?
+  unit        String
+  qty         Int
+  unitCost    Int
+  subtotal    Int
+
+  @@index([orderId])
+  @@index([skuId])
+}
+
+model PurchasePayment {
+  id         String        @id @default(uuid())
+  orderId    String
+  order      PurchaseOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  amount     Int
+  method     PaymentMethod @default(CASH)
+  note       String?
+  operatorId String?
+  createdAt  DateTime      @default(now())
+
+  @@index([orderId])
+}
+
+// ---------- 二期：盘点任务 ----------
+
+model StocktakeTask {
+  id              String         @id @default(uuid())
+  taskNo          String         @unique
+  status          StocktakeStatus @default(OPEN)
+  scopeCategoryId String?
+  scopeCategory   Category?      @relation(fields: [scopeCategoryId], references: [id])
+  note            String?
+  creatorId       String?
+  creator         User?          @relation("StocktakeCreator", fields: [creatorId], references: [id])
+  appliedAt       DateTime?
+  createdAt       DateTime       @default(now())
+
+  items StocktakeItem[]
+}
+
+model StocktakeItem {
+  id          String        @id @default(uuid())
+  taskId      String
+  task        StocktakeTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  skuId       String
+  sku         Sku           @relation(fields: [skuId], references: [id])
+  productName String
+  spec        String?
+  unit        String
+  /** 建任务时的账面库存快照 */
+  snapshotQty Int
+  /** 实盘数量；null = 未盘 */
+  countedQty  Int?
+
+  @@index([taskId])
+  @@index([skuId])
+}
+
+// ---------- 二期：会员储值 / 积分 ----------
+
+model Member {
+  id        String   @id @default(uuid())
+  /** 会员码（M 前缀 + 序列），可作为会员卡号扫码识别 */
+  code      String   @unique
+  name      String
+  phone     String?
+  balance   Int      @default(0)
+  points    Int      @default(0)
+  active    Boolean  @default(true)
+  remark    String?
+  createdAt DateTime @default(now())
+
+  txns  MemberTxn[]
+  orders SaleOrder[] @relation("MemberOrders")
+
+  @@index([phone])
+  @@index([name])
+}
+
+model MemberTxn {
+  id           String        @id @default(uuid())
+  memberId     String
+  member       Member        @relation(fields: [memberId], references: [id])
+  type         MemberTxnType
+  /** 储值余额变动（分），正为入账负为扣减 */
+  amount       Int           @default(0)
+  balanceAfter Int
+  pointsChange Int           @default(0)
+  pointsAfter  Int
+  refNo        String?
+  note         String?
+  operatorId   String?
+  operator     User?           @relation("MemberTxnOperator", fields: [operatorId], references: [id])
+  createdAt    DateTime      @default(now())
+
+  @@index([memberId, createdAt])
+}
+
+// ---------- 二期：支出记账 ----------
+
+model Expense {
+  id         String         @id @default(uuid())
+  date       DateTime
+  category   ExpenseCategory
+  amount     Int
+  title      String
+  note       String?
+  operatorId String?
+  operator   User?          @relation("ExpenseOperator", fields: [operatorId], references: [id])
+  createdAt  DateTime       @default(now())
+
+  @@index([date])
 }
 
 model Setting {

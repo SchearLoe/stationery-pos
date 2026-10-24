@@ -96,6 +96,37 @@ async function main() {
     console.log(`已插入 ${DEMO_PRODUCTS.length} 个演示商品`);
   }
 
+  // 演示会员（二期：会员储值/积分）
+  const memberCount = await prisma.member.count();
+  if (memberCount === 0) {
+    const m = await prisma.member.create({
+      data: { code: 'M000001', name: '张老师', phone: '13800000001', balance: 10000, points: 120 },
+    });
+    await prisma.memberTxn.create({
+      data: {
+        memberId: m.id,
+        type: 'RECHARGE',
+        amount: 10000,
+        balanceAfter: 10000,
+        pointsAfter: 120,
+        note: '演示数据：期初充值 100 元',
+        operatorId: boss.id,
+      },
+    });
+    console.log('已插入演示会员：张老师（手机号 13800000001 / 会员码 M000001，余额 100 元 + 120 积分）');
+  }
+
+  // 演示供应商（二期：采购/应付）
+  if ((await prisma.supplier.count()) === 0) {
+    await prisma.supplier.create({
+      data: { name: '晨光文具总代理', phone: '13900000002', contact: '王经理' },
+    });
+    await prisma.supplier.create({
+      data: { name: '得力办公批发', phone: '13900000003', contact: '李经理' },
+    });
+    console.log('已插入 2 个演示供应商');
+  }
+
   console.log('种子数据完成：');
   console.log('  老板账号   boss / boss123');
   console.log('  收银员账号 cashier / cashier123');

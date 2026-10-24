@@ -5,15 +5,24 @@ import type {
   AdjustInventoryInput,
   AuthUser,
   CategoryDto,
+  CreatePurchaseInput,
   CreateRefundInput,
   CreateSaleOrderInput,
+  ExpenseDto,
   LoginResult,
+  MemberDto,
+  MemberTxnDto,
+  MonthlyStatementDto,
+  PayableSummaryDto,
   ProductDto,
   ProductUpsertInput,
+  PurchaseOrderDto,
   SaleOrderDto,
   SalesSummaryDto,
   ShiftDto,
+  StocktakeTaskDto,
   StoreSettings,
+  SupplierDto,
   TopProductDto,
 } from '@pos/shared-types';
 
@@ -136,3 +145,139 @@ export const updateSettings = (patch: Partial<StoreSettings>) => http.put<never,
 
 export const listAuditLogs = (q: Record<string, unknown>) =>
   http.get<never, { total: number; items: any[] }>('/settings/audit-logs', { params: q });
+
+// ---------- 采购 / 应付（二期） ----------
+
+export const listSuppliers = (keyword?: string) =>
+  http.get<never, (SupplierDto & { receivedTotal: number; paidTotal: number; payable: number; orderCount: number })[]>(
+    '/purchases/suppliers',
+    { params: keyword ? { keyword } : undefined },
+  );
+
+export const createSupplier = (data: { name: string; phone?: string | null; contact?: string | null; remark?: string | null }) =>
+  http.post<never, SupplierDto>('/purchases/suppliers', data);
+
+export const updateSupplier = (id: string, data: { name: string; phone?: string | null; contact?: string | null; remark?: string | null }) =>
+  http.put<never, SupplierDto>(`/purchases/suppliers/${id}`, data);
+
+export const deleteSupplier = (id: string) =>
+  http.delete<never, { ok: boolean; disabled: boolean }>(`/purchases/suppliers/${id}`);
+
+export const listPurchaseOrders = (q: Record<string, unknown>) =>
+  http.get<never, { total: number; items: PurchaseOrderDto[] }>('/purchases/orders', { params: q });
+
+export const getPurchaseOrder = (id: string) =>
+  http.get<never, PurchaseOrderDto>(`/purchases/orders/${id}`);
+
+export const createPurchase = (data: CreatePurchaseInput) =>
+  http.post<never, PurchaseOrderDto>('/purchases/orders', data);
+
+export const receivePurchase = (id: string) =>
+  http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/receive`);
+
+export const cancelPurchase = (id: string) =>
+  http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/cancel`);
+
+export const payPurchase = (
+  id: string,
+  data: { amount: number; method?: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER'; note?: string },
+) => http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/payments`, data);
+
+export const purchasePayables = () =>
+  http.get<never, PayableSummaryDto[]>('/purchases/payables');
+
+// ---------- 盘点任务（二期） ----------
+
+export const listStocktakes = (q: Record<string, unknown>) =>
+  http.get<never, { total: number; items: StocktakeTaskDto[] }>('/stocktakes', { params: q });
+
+export const getStocktake = (id: string) =>
+  http.get<never, StocktakeTaskDto>(`/stocktakes/${id}`);
+
+export const createStocktake = (data: { categoryId?: string; note?: string }) =>
+  http.post<never, StocktakeTaskDto>('/stocktakes', data);
+
+export const saveStocktakeCounts = (
+  id: string,
+  items: { id: string; countedQty: number | null }[],
+) => http.put<never, StocktakeTaskDto>(`/stocktakes/${id}/counts`, { items });
+
+export const applyStocktake = (id: string) =>
+  http.post<never, StocktakeTaskDto>(`/stocktakes/${id}/apply`);
+
+export const cancelStocktake = (id: string) =>
+  http.post<never, StocktakeTaskDto>(`/stocktakes/${id}/cancel`);
+
+// ---------- 会员储值 / 积分（二期） ----------
+
+export const listMembers = (q: Record<string, unknown>) =>
+  http.get<never, { total: number; items: MemberDto[] }>('/members', { params: q });
+
+export const lookupMember = (key: string) =>
+  http.get<never, MemberDto>('/members/lookup', { params: { key } });
+
+export const createMember = (data: { name: string; phone?: string | null; remark?: string | null }) =>
+  http.post<never, MemberDto>('/members', data);
+
+export const updateMember = (id: string, data: Record<string, unknown>) =>
+  http.put<never, MemberDto>(`/members/${id}`, data);
+
+export const rechargeMember = (
+  id: string,
+  data: { amount: number; bonus?: number; method?: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER'; note?: string },
+) => http.post<never, MemberDto>(`/members/${id}/recharge`, data);
+
+export const adjustMember = (
+  id: string,
+  data: { balanceDelta?: number; pointsDelta?: number; note: string },
+) => http.post<never, MemberDto>(`/members/${id}/adjust`, data);
+
+export const memberTxns = (id: string, q: Record<string, unknown>) =>
+  http.get<never, { total: number; items: MemberTxnDto[] }>(`/members/${id}/txns`, { params: q });
+
+// ---------- 账目 / 月结（二期） ----------
+
+export const listExpenses = (q: Record<string, unknown>) =>
+  http.get<never, { total: number; totalAmount: number; items: ExpenseDto[] }>('/ledger/expenses', { params: q });
+
+export const createExpense = (data: { date: string; category: string; amount: number; title: string; note?: string | null }) =>
+  http.post<never, ExpenseDto>('/ledger/expenses', data);
+
+export const updateExpense = (id: string, data: Record<string, unknown>) =>
+  http.put<never, ExpenseDto>(`/ledger/expenses/${id}`, data);
+
+export const deleteExpense = (id: string) =>
+  http.delete<never, { ok: boolean }>(`/ledger/expenses/${id}`);
+
+export const monthlyStatement = (month: string) =>
+  http.get<never, MonthlyStatementDto>('/ledger/monthly', { params: { month } });
+
+// ---------- 报表导出（二期，CSV 带中文表头，可直接用 Excel 打开） ----------
+
+async function downloadCsv(path: string, params: Record<string, unknown> | undefined, filename: string) {
+  const blob = await http.get<never, Blob>(path, { params, responseType: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+export const exportSummaryCsv = (from: string, to: string) =>
+  downloadCsv('/reports/export/summary', { from, to }, `销售汇总_${from}_${to}.csv`);
+
+export const exportDailyCsv = (from: string, to: string) =>
+  downloadCsv('/reports/export/daily', { from, to }, `每日销售_${from}_${to}.csv`);
+
+export const exportTopProductsCsv = (from: string, to: string) =>
+  downloadCsv('/reports/export/top-products', { from, to, limit: 50 }, `商品销量_${from}_${to}.csv`);
+
+export const exportOrdersCsv = (from: string, to: string) =>
+  downloadCsv('/reports/export/orders', { from, to }, `销售明细_${from}_${to}.csv`);
+
+export const exportInventoryCsv = () =>
+  downloadCsv('/reports/export/inventory', undefined, `库存快照_${new Date().toISOString().slice(0, 10)}.csv`);
+
+export const exportMonthlyCsv = (month: string) =>
+  downloadCsv('/reports/export/monthly', { month }, `月结报表_${month}.csv`);

@@ -6,7 +6,7 @@ import { AuditService } from '../common/audit.service';
 type Viewer = { id: string; role: 'BOSS' | 'CASHIER' };
 
 export interface ShiftSummary {
-  method: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER';
+  method: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER' | 'BALANCE';
   amount: number;
   count: number;
 }

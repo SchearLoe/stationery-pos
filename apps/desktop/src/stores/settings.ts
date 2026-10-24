@@ -12,6 +12,8 @@ export const useSettingsStore = defineStore('settings', {
       allowNegativeStock: true,
       cashierMinDiscountPercent: 95,
       cashierCanRefund: true,
+      memberPointsPerYuan: 1,
+      memberPointValueCent: 1,
     } as StoreSettings,
     loaded: false,
   }),

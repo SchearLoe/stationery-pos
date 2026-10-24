@@ -30,8 +30,8 @@ export class SaleItemInputDto {
 }
 
 export class PaymentInputDto {
-  @IsIn(['CASH', 'WECHAT', 'ALIPAY', 'CARD', 'OTHER'])
-  method!: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER';
+  @IsIn(['CASH', 'WECHAT', 'ALIPAY', 'CARD', 'OTHER', 'BALANCE'])
+  method!: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER' | 'BALANCE';
 
   @IsInt()
   @Min(0)
@@ -55,6 +55,17 @@ export class CreateSaleOrderDto {
   @IsInt()
   @Min(0)
   discountAmount?: number;
+
+  /** 挂单会员：应用会员价、可储值支付/积分抵扣（仅在线单） */
+  @IsOptional()
+  @IsUUID()
+  memberId?: string;
+
+  /** 使用积分抵扣的数量 */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  usePoints?: number;
 
   @IsOptional()
   @IsString()
@@ -100,8 +111,8 @@ export class CreateRefundDto {
   items!: RefundItemInputDto[];
 
   @IsOptional()
-  @IsIn(['CASH', 'WECHAT', 'ALIPAY', 'CARD', 'OTHER'])
-  method?: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER';
+  @IsIn(['CASH', 'WECHAT', 'ALIPAY', 'CARD', 'OTHER', 'BALANCE'])
+  method?: 'CASH' | 'WECHAT' | 'ALIPAY' | 'CARD' | 'OTHER' | 'BALANCE';
 }
 
 export class VoidOrderDto {

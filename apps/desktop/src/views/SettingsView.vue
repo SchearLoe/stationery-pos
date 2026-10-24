@@ -189,6 +189,14 @@ onMounted(() => {
         <el-form-item label="允许收银员退货">
           <el-switch v-model="form.cashierCanRefund" />
         </el-form-item>
+        <el-form-item label="会员积分赠送">
+          <el-input-number v-model="form.memberPointsPerYuan" :min="0" :max="100" />
+          <span class="hint">积分/元（消费 1 元送 N 积分，0 = 不送）</span>
+        </el-form-item>
+        <el-form-item label="积分抵扣价值">
+          <el-input-number v-model="form.memberPointValueCent" :min="1" :max="100" />
+          <span class="hint">分/积分（1 分 = 1 积分抵 0.01 元）</span>
+        </el-form-item>
       </el-form>
       <el-button v-if="auth.isBoss" type="primary" :loading="saving" @click="save">保存设置</el-button>
       <el-alert v-else title="仅老板可修改设置" type="info" :closable="false" style="width: 300px" />

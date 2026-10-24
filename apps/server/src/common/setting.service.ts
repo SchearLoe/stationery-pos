@@ -21,6 +21,10 @@ export interface StoreSettingsShape {
   escposPrinterName: string;
   /** 小票纸宽 mm */
   receiptPaperWidth: number;
+  /** 会员积分：每消费 1 元（100 分）获得积分数，0 = 不送 */
+  memberPointsPerYuan: number;
+  /** 会员积分：1 积分抵扣金额（分） */
+  memberPointValueCent: number;
 }
 
 export const DEFAULT_SETTINGS: StoreSettingsShape = {
@@ -36,6 +40,8 @@ export const DEFAULT_SETTINGS: StoreSettingsShape = {
   escposDirectEnabled: false,
   escposPrinterName: '',
   receiptPaperWidth: 58,
+  memberPointsPerYuan: 1,
+  memberPointValueCent: 1,
 };
 
 @Injectable()

@@ -1,0 +1,51 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "老板端登录"
+      }
+    },
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "经营概览",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/purchase/purchase",
+      "style": {
+        "navigationBarTitleText": "采购应付",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/stocktake/stocktake",
+      "style": {
+        "navigationBarTitleText": "盘点任务",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/stocktake/detail",
+      "style": {
+        "navigationBarTitleText": "盘点录入",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/members/members",
+      "style": {
+        "navigationBarTitleText": "会员储值",
+        "enablePullDownRefresh": true
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "文具店老板端",
+    "navigationBarBackgroundColor": "#2f3542",
+    "backgroundColor": "#f5f6fa"
+  }
+}

@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ExpenseCategory, Prisma } from '@prisma/client';
-import { PrismaService } from '../common/prisma.module';
+import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../common/audit.service';
 
 type Viewer = { id: string; role: 'BOSS' | 'CASHIER' };

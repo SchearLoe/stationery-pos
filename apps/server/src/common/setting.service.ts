@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from './prisma.module';
+import { PrismaService } from './prisma.service';
 
 export interface StoreSettingsShape {
   storeName: string;

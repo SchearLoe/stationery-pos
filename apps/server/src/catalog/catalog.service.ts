@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../common/prisma.module';
+import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../common/audit.service';
 import { genStoreBarcode, validateBarcode } from '../common/barcode.util';
 import {

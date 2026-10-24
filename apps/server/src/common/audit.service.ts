@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from './prisma.module';
+import { PrismaService } from './prisma.service';
 
 /** 审计日志：敏感操作统一记录，只写不改不删 */
 @Injectable()

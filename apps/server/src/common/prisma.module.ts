@@ -1,22 +1,12 @@
-import { Global, Injectable, Module, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Global, Module } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
 import { AuditService } from './audit.service';
 import { SettingService } from './setting.service';
-
-@Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  async onModuleInit() {
-    await this.$connect();
-  }
-
-  async onModuleDestroy() {
-    await this.$disconnect();
-  }
-}
 
 /**
  * 全局基础设施模块：Prisma + 审计 + 设置。
  * 各业务模块直接注入，无需重复声明 provider。
+ * 注意：业务代码应从 ./prisma.service 导入 PrismaService（勿从本文件导入，会形成循环依赖）。
  */
 @Global()
 @Module({

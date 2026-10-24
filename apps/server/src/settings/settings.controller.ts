@@ -3,7 +3,7 @@ import { SettingService } from '../common/setting.service';
 import { Roles } from '../common/roles.decorator';
 import { AuditService } from '../common/audit.service';
 import { CurrentUser } from '../common/current-user.decorator';
-import { PrismaService } from '../common/prisma.module';
+import { PrismaService } from '../common/prisma.service';
 
 class UpdateSettingsDto {
   storeName?: string;

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './common/prisma.module';
+import { JwtAuthGuard, RolesGuard } from './common/guards';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { CatalogModule } from './catalog/catalog.module';
@@ -30,6 +32,11 @@ import { LedgerModule } from './ledger/ledger.module';
     StocktakeModule,
     MembersModule,
     LedgerModule,
+  ],
+  // 全局 JWT 鉴权 + 角色守卫：@Public() 跳过鉴权，@Roles() 控制角色
+  providers: [
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
 export class AppModule {}

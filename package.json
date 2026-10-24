@@ -1,6 +1,6 @@
 {
   "name": "stationery-pos",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "private": true,
   "description": "小型文具店收银系统：Electron + Vue3 桌面收银端 / NestJS + PostgreSQL 云端",
   "scripts": {

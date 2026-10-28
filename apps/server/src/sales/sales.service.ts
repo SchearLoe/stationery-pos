@@ -344,6 +344,15 @@ export class SalesService {
   }
 
   /** 整单作废（红冲）：仅老板，回补未退库存、返还会员储值与积分 */
+  /** 原单储值可退余额 = 储值实付合计 − 该单已按「储值」方式退回的金额（作废与退货共用同一口径） */
+  private async refundableBalance(orderId: string, balancePaidTotal: number): Promise<number> {
+    const agg = await this.prisma.refundOrder.aggregate({
+      where: { orderId, method: 'BALANCE' },
+      _sum: { amount: true },
+    });
+    return Math.max(0, balancePaidTotal - (agg._sum.amount ?? 0));
+  }
+
   async voidOrder(id: string, reason: string, viewer: Viewer) {
     if (viewer.role !== 'BOSS') throw new ForbiddenException('仅老板可作废订单');
     const order = await this.prisma.saleOrder.findUnique({
@@ -378,17 +387,18 @@ export class SalesService {
           },
         });
       }
-      // 会员权益回冲：储值原额返还；使用积分返还、赠送积分扣回
+      // 会员权益回冲：储值按「未退余额」返还；使用积分返还、赠送积分扣回
       if (order.memberId) {
-        const balancePaid = order.payments
+        const balancePaidTotal = order.payments
           .filter((p) => p.method === 'BALANCE')
           .reduce((s, p) => s + p.amount, 0);
+        const balanceReturn = await this.refundableBalance(order.id, balancePaidTotal);
         const pointsChange = order.pointsUsed - order.pointsEarned;
-        if (balancePaid > 0 || pointsChange !== 0) {
+        if (balanceReturn > 0 || pointsChange !== 0) {
           const updated = await tx.member.update({
             where: { id: order.memberId },
             data: {
-              ...(balancePaid > 0 ? { balance: { increment: balancePaid } } : {}),
+              ...(balanceReturn > 0 ? { balance: { increment: balanceReturn } } : {}),
               ...(pointsChange !== 0 ? { points: { increment: pointsChange } } : {}),
             },
           });
@@ -399,7 +409,7 @@ export class SalesService {
             data: {
               memberId: order.memberId,
               type: 'REFUND',
-              amount: balancePaid,
+              amount: balanceReturn,
               balanceAfter: updated.balance,
               pointsChange,
               pointsAfter: updated.points,
@@ -443,6 +453,18 @@ export class SalesService {
       dto.method ?? (order.payments.length === 1 ? order.payments[0].method : 'CASH');
     if (method === 'BALANCE' && !order.memberId) {
       throw new BadRequestException('原单未挂会员，储值余额不能退款，请选择其他方式');
+    }
+    // 储值退款不得超过原单储值实付的未退余额：混合支付的单不能把现金部分退成储值
+    if (method === 'BALANCE') {
+      const balancePaidTotal = order.payments
+        .filter((p) => p.method === 'BALANCE')
+        .reduce((s, p) => s + p.amount, 0);
+      const refundable = await this.refundableBalance(order.id, balancePaidTotal);
+      if (amount > refundable) {
+        throw new BadRequestException(
+          `储值最多可退 ${(refundable / 100).toFixed(2)} 元（原单储值实付的未退部分），其余请改用现金等方式退`,
+        );
+      }
     }
 
     const refund = await this.prisma.$transaction(async (tx) => {

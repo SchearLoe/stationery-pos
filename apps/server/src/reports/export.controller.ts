@@ -18,8 +18,12 @@ const PAYMENT_LABELS: Record<string, string> = {
   BALANCE: '储值余额',
 };
 
-function csvEscape(v: unknown): string {
-  const s = v === null || v === undefined ? '' : String(v);
+export function csvEscape(v: unknown): string {
+  let s = v === null || v === undefined ? '' : String(v);
+  // 防 Excel 公式注入：以 = + - @ 等开头的文本单元格前置单引号（纯数字负数不受影响）
+  if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) {
+    s = `'${s}`;
+  }
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

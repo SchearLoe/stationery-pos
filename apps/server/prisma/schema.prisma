@@ -363,6 +363,8 @@ model PurchaseItem {
   barcode     String?
   unit        String
   qty         Int
+  /** 已入库数量（支持一张订单分批到货） */
+  receivedQty Int           @default(0)
   unitCost    Int
   subtotal    Int
 
@@ -422,11 +424,13 @@ model StocktakeItem {
 
 model Member {
   id        String   @id @default(uuid())
-  /** 会员码（M 前缀 + 序列），可作为会员卡号扫码识别 */
+  /** 会员码（M 前缀 + 8 位随机字母数字），可作为会员卡号扫码识别 */
   code      String   @unique
   name      String
   phone     String?
+  /** 储值余额（分）。非负由迁移 SQL 的 CHECK 约束兜底（应用层校验之外的第二道防线） */
   balance   Int      @default(0)
+  /** 积分。非负约束同上 */
   points    Int      @default(0)
   active    Boolean  @default(true)
   remark    String?

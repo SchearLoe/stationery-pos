@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 
 /**
  * 生成店内码：EAN-13 保留的 20~29 前缀段，供无条码商品使用。
@@ -48,9 +49,14 @@ export function genOrderNo(prefix: 'S' | 'R' | 'P' | 'T'): string {
   return `${prefix}${ymd}-${rand}`;
 }
 
-/** 生成会员码：M + 6 位数字（做会员卡号/扫码识别，唯一约束兜底重试） */
+/** 会员码字符集：去掉易混淆的 0/O/1/I */
+const MEMBER_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** 生成会员码：M + 8 位随机字母数字（防猜测，唯一约束兜底重试） */
 export function genMemberCode(): string {
-  return `M${Math.floor(Math.random() * 1_000_000)
-    .toString()
-    .padStart(6, '0')}`;
+  const chars: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    chars.push(MEMBER_CODE_ALPHABET[randomInt(0, MEMBER_CODE_ALPHABET.length)]!);
+  }
+  return `M${chars.join('')}`;
 }

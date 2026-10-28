@@ -32,7 +32,10 @@ describe('barcode.util', () => {
     expect(genOrderNo('T')).toMatch(/^T\d{8}-[0-9A-F]{4}$/);
   });
 
-  it('genMemberCode 生成 M+6 位数字会员码', () => {
-    expect(genMemberCode()).toMatch(/^M\d{6}$/);
+  it('genMemberCode 生成 M+8 位防猜字母数字会员码（不含易混字符）', () => {
+    const code = genMemberCode();
+    expect(code).toMatch(/^M[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/);
+    // 连续生成不重复（防撞靠随机空间 + 唯一约束兜底）
+    expect(genMemberCode()).not.toBe(code);
   });
 });

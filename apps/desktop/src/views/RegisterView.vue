@@ -91,9 +91,12 @@ async function confirmAttachMember() {
 }
 
 function detachMember() {
-  // 解除挂单：有会员价的行恢复零售价
+  // 解除挂单：只恢复「由挂会员自动改写为会员价」的行，手工改价/授权价不受影响
   for (const it of cart.items) {
-    if (it.memberPrice != null && it.unitPrice === it.memberPrice) cart.setPrice(it.skuId, it.retailPrice);
+    if (it.memberApplied) {
+      cart.setPrice(it.skuId, it.retailPrice);
+      it.memberApplied = false;
+    }
   }
   member.value = null;
   pointsInput.value = '';
@@ -102,7 +105,10 @@ function detachMember() {
 /** 挂会员后把有会员价的行重置为会员价（收银员无最低售价限制，服务端按会员价放行） */
 function applyMemberPrice() {
   for (const it of cart.items) {
-    if (it.memberPrice != null) cart.setPrice(it.skuId, it.memberPrice);
+    if (it.memberPrice != null && it.unitPrice !== it.memberPrice) {
+      cart.setPrice(it.skuId, it.memberPrice);
+      it.memberApplied = true;
+    }
   }
 }
 
@@ -308,6 +314,9 @@ function confirmPriceEdit() {
   }
   const apply = () => {
     cart.setPrice(target.skuId, fen);
+    // 人工改价后该行不再视为「会员价自动应用」，解除挂会员时不回退
+    const item = cart.items.find((i) => i.skuId === target.skuId);
+    if (item) item.memberApplied = false;
     priceDialog.value = false;
     refocus();
   };

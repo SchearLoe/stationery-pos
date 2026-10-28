@@ -22,6 +22,14 @@ export class MembersService {
     if (viewer.role !== 'BOSS') throw new ForbiddenException('仅老板可操作会员账户');
   }
 
+  /** 收银员视图对手机号脱敏（老板可见完整号码） */
+  private maskForMember<T extends { phone: string | null }>(viewer: Viewer, member: T): T {
+    if (viewer.role === 'BOSS' || !member.phone) return member;
+    const p = member.phone;
+    const masked = p.length >= 7 ? `${p.slice(0, 3)}****${p.slice(-4)}` : p.replace(/./g, '*');
+    return { ...member, phone: masked };
+  }
+
   /** 会员查询：收银台挂单会员也用它（收银员只读 + 本人可见余额为店内公开信息） */
   async list(viewer: Viewer, q: { keyword?: string; page?: string; pageSize?: string }) {
     const page = Math.max(1, Number(q.page ?? 1));
@@ -44,13 +52,13 @@ export class MembersService {
         take: pageSize,
       }),
     ]);
-    return { total, page, pageSize, items: members };
+    return { total, page, pageSize, items: members.map((m) => this.maskForMember(viewer, m)) };
   }
 
   async get(viewer: Viewer, id: string) {
     const member = await this.prisma.member.findUnique({ where: { id } });
     if (!member) throw new NotFoundException('会员不存在');
-    return member;
+    return this.maskForMember(viewer, member);
   }
 
   /** 收银台按手机号/会员码精确挂单（扫码枪扫会员卡场景） */
@@ -59,7 +67,7 @@ export class MembersService {
       where: { OR: [{ code: key.toUpperCase() }, { phone: key }], active: true },
     });
     if (!member) throw new NotFoundException('未找到该会员');
-    return member;
+    return this.maskForMember(viewer, member);
   }
 
   async create(viewer: Viewer, dto: { name: string; phone?: string | null; remark?: string | null }) {

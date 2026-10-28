@@ -121,6 +121,7 @@ export class ExportController {
         lte: to ? new Date(to) : undefined,
       },
     };
+    const limit = 10000;
     const orders = await this.prisma.saleOrder.findMany({
       where,
       include: {
@@ -130,25 +131,30 @@ export class ExportController {
         payments: true,
       },
       orderBy: { createdAt: 'desc' },
-      take: 10000,
+      take: limit + 1,
     });
+    const truncated = orders.length > limit;
+    const rows = orders.slice(0, limit).map((o) => [
+      o.orderNo,
+      dt(o.createdAt),
+      o.cashier.name,
+      o.member ? `${o.member.name}(${o.member.code})` : '',
+      o.status === 'NORMAL' ? '正常' : '已作废',
+      o.items.map((i) => `${i.productName}${i.spec ? `(${i.spec})` : ''}×${i.qty}`).join('；'),
+      o.payments
+        .map((p) => `${PAYMENT_LABELS[p.method] ?? p.method}${yuan(p.amount)}`)
+        .join('；'),
+      yuan(o.totalAmount),
+      yuan(o.discountAmount),
+      yuan(o.pointsDiscount),
+      o.status === 'NORMAL' ? yuan(o.payableAmount) : `0.00（作废：${o.voidReason ?? ''}）`,
+    ]);
+    if (truncated) {
+      rows.push([`【提示】订单超过 ${limit} 条上限，仅导出最近 ${limit} 条，请缩小时间范围后分批导出`, '', '', '', '', '', '', '', '', '', '']);
+    }
     const csv = toCsv(
       ['单号', '时间', '收银员', '会员', '状态', '商品明细', '支付方式', '合计（元）', '优惠（元）', '积分抵扣（元）', '实收（元）'],
-      orders.map((o) => [
-        o.orderNo,
-        dt(o.createdAt),
-        o.cashier.name,
-        o.member ? `${o.member.name}(${o.member.code})` : '',
-        o.status === 'NORMAL' ? '正常' : '已作废',
-        o.items.map((i) => `${i.productName}${i.spec ? `(${i.spec})` : ''}×${i.qty}`).join('；'),
-        o.payments
-          .map((p) => `${PAYMENT_LABELS[p.method] ?? p.method}${yuan(p.amount)}`)
-          .join('；'),
-        yuan(o.totalAmount),
-        yuan(o.discountAmount),
-        yuan(o.pointsDiscount),
-        o.status === 'NORMAL' ? yuan(o.payableAmount) : `0.00（作废：${o.voidReason ?? ''}）`,
-      ]),
+      rows,
     );
     return this.send(res, `orders_${from || 'all'}_${to || 'all'}.csv`, csv);
   }
@@ -156,6 +162,7 @@ export class ExportController {
   /** 库存快照（含成本，仅老板） */
   @Get('inventory')
   async inventory(@CurrentUser() user: Viewer, @Res({ passthrough: true }) res: Response) {
+    const limit = 20000;
     const skus = await this.prisma.sku.findMany({
       include: {
         product: { select: { name: true, unit: true } },
@@ -163,25 +170,30 @@ export class ExportController {
         inventory: { select: { qty: true } },
       },
       orderBy: [{ product: { name: 'asc' } }, { spec: 'asc' }],
-      take: 20000,
+      take: limit + 1,
     });
+    const truncated = skus.length > limit;
+    const rows = skus.slice(0, limit).map((s) => {
+      const qty = s.inventory?.qty ?? 0;
+      return [
+        s.product.name,
+        s.spec ?? '',
+        s.barcodes[0]?.barcode ?? '',
+        s.product.unit,
+        yuan(s.retailPrice),
+        qty,
+        s.safetyStock,
+        s.lastCost === null ? '' : yuan(s.lastCost),
+        s.costAvg === null ? '' : yuan(s.costAvg),
+        qty > 0 ? yuan(qty * (s.costAvg ?? 0)) : '0.00',
+      ];
+    });
+    if (truncated) {
+      rows.push([`【提示】SKU 超过 ${limit} 条上限，仅导出前 ${limit} 条`, '', '', '', '', '', '', '', '', '']);
+    }
     const csv = toCsv(
       ['商品', '规格', '条码', '单位', '零售价（元）', '库存', '安全库存', '最近进价（元）', '加权成本（元）', '库存金额（元）'],
-      skus.map((s) => {
-        const qty = s.inventory?.qty ?? 0;
-        return [
-          s.product.name,
-          s.spec ?? '',
-          s.barcodes[0]?.barcode ?? '',
-          s.product.unit,
-          yuan(s.retailPrice),
-          qty,
-          s.safetyStock,
-          s.lastCost === null ? '' : yuan(s.lastCost),
-          s.costAvg === null ? '' : yuan(s.costAvg),
-          qty > 0 ? yuan(qty * (s.costAvg ?? 0)) : '0.00',
-        ];
-      }),
+      rows,
     );
     return this.send(res, `inventory_${dt(new Date()).slice(0, 10)}.csv`, csv);
   }
@@ -211,6 +223,7 @@ export class ExportController {
         ...s.expensesByCategory.map((e) => [`支出-${e.category}（元）`, yuan(e.amount)]),
         ['会员充值（元）', yuan(s.memberRechargeAmount)],
         ['净利估算（元）', yuan(s.netProfitEstimate)],
+        ...(s.notes ?? []).map((n) => [`口径说明：${n}`, '']),
       ],
     );
     return this.send(res, `monthly_${month}.csv`, csv);

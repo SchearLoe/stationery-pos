@@ -356,6 +356,8 @@ export interface PurchaseItemDto {
   barcode: string | null;
   unit: string;
   qty: number;
+  /** 已入库数量（分批到货） */
+  receivedQty: number;
   unitCost: number;
   subtotal: number;
 }
@@ -375,7 +377,14 @@ export interface PurchaseOrderDto {
   supplierName?: string;
   status: PurchaseStatus;
   totalAmount: number;
+  /** 已入库金额（按分批到货的实收数量 × 进价） */
+  receivedAmount: number;
+  /** 已入库总数量 */
+  receivedQty?: number;
+  /** 订单总数量 */
+  totalQty?: number;
   paidAmount: number;
+  /** 应付 = 已入库金额 − 累计付款 */
   payableAmount: number;
   remark: string | null;
   operatorName?: string | null;

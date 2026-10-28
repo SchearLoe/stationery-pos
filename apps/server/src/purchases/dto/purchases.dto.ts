@@ -65,6 +65,25 @@ export class CreatePurchaseDto {
   remark?: string | null;
 }
 
+export class ReceiveItemInputDto {
+  @IsUUID()
+  itemId!: string;
+
+  /** 本次入库数量（不超过该行剩余待收数量） */
+  @IsInt()
+  @Min(1)
+  qty!: number;
+}
+
+export class ReceivePurchaseDto {
+  /** 不传 = 按全部剩余待收数量入库 */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ReceiveItemInputDto)
+  items?: ReceiveItemInputDto[];
+}
+
 export class PurchasePaymentDto {
   @IsInt()
   @Min(1)

@@ -191,6 +191,12 @@ export class LedgerService {
       })),
       memberRechargeAmount: rechargeAgg._sum.amount ?? 0,
       netProfitEstimate: netSalesAmount - cogsAmount - expenseTotal,
+      // 口径说明（随报表输出，老板看数时对得上账）
+      notes: [
+        '净利估算 = 净销售额 - 销售成本 - 杂项支出；本月采购入库与付款为现金口径，单列不参与净利计算',
+        '会员充值计入负债流入（会员卡余额），不计入当月收入',
+        '销售成本按下单时点成本快照估算；储值赠送部分日后消费会轻微抬高毛利',
+      ],
     };
   }
 }

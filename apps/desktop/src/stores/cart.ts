@@ -13,6 +13,8 @@ export interface CartItem {
   minPrice: number | null;
   /** 会员价（分），挂会员后一键应用 */
   memberPrice?: number | null;
+  /** 单价是否由「挂会员自动应用会员价」改写（解除挂会员时只恢复这些行） */
+  memberApplied?: boolean;
   stockQty: number;
 }
 

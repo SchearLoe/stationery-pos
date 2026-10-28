@@ -8,7 +8,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../common/prisma.service';
 import { AuditService } from '../common/audit.service';
 import { genOrderNo } from '../common/barcode.util';
-import { CreatePurchaseDto, PurchasePaymentDto, SupplierUpsertDto } from './dto/purchases.dto';
+import { CreatePurchaseDto, PurchasePaymentDto, ReceivePurchaseDto, SupplierUpsertDto } from './dto/purchases.dto';
 
 type Viewer = { id: string; role: 'BOSS' | 'CASHIER' };
 
@@ -30,39 +30,69 @@ export class PurchasesService {
     if (viewer.role !== 'BOSS') throw new ForbiddenException('仅老板可管理采购');
   }
 
+  /** 单行已入库金额 */
+  private receivedAmountOf(items: { receivedQty: number; unitCost: number }[]): number {
+    return items.reduce((n, i) => n + i.receivedQty * i.unitCost, 0);
+  }
+
+  /**
+   * 按供应商聚合：已入库金额与累计付款。
+   * 应付口径 = 已入库金额（含 DRAFT 单的部分到货）− 累计付款；一次查询内存聚合，避免 N+1。
+   */
+  private async aggregateBySupplier(): Promise<
+    Map<string, { receivedTotal: number; paidTotal: number; orderCount: number }>
+  > {
+    const [orders, payments] = await Promise.all([
+      this.prisma.purchaseOrder.findMany({
+        where: { status: { in: ['DRAFT', 'RECEIVED'] } },
+        select: {
+          supplierId: true,
+          items: { select: { receivedQty: true, unitCost: true } },
+        },
+      }),
+      this.prisma.purchasePayment.findMany({
+        select: { amount: true, order: { select: { supplierId: true } } },
+      }),
+    ]);
+    const map = new Map<string, { receivedTotal: number; paidTotal: number; orderCount: number }>();
+    for (const o of orders) {
+      const cur = map.get(o.supplierId) ?? { receivedTotal: 0, paidTotal: 0, orderCount: 0 };
+      cur.receivedTotal += this.receivedAmountOf(o.items);
+      cur.orderCount += 1;
+      map.set(o.supplierId, cur);
+    }
+    for (const p of payments) {
+      const cur = map.get(p.order.supplierId);
+      if (cur) cur.paidTotal += p.amount;
+    }
+    return map;
+  }
+
   // ---------- 供应商 ----------
 
   async listSuppliers(viewer: Viewer, keyword?: string) {
     this.requireBoss(viewer);
     const where: Prisma.SupplierWhereInput = { active: true };
     if (keyword?.trim()) where.name = { contains: keyword.trim(), mode: 'insensitive' as const };
-    const suppliers = await this.prisma.supplier.findMany({
-      where,
-      include: { purchaseOrders: { where: { status: 'RECEIVED' }, select: { totalAmount: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
-    // 应付 = 已入库采购总额 - 全部付款（含未入库单的预付，简化口径：按供应商汇总）
-    const items = [];
-    for (const s of suppliers) {
-      const receivedTotal = s.purchaseOrders.reduce((n, o) => n + o.totalAmount, 0);
-      const paidTotal = await this.prisma.purchasePayment.aggregate({
-        where: { order: { supplierId: s.id } },
-        _sum: { amount: true },
-      });
-      items.push({
+    const [suppliers, agg] = await Promise.all([
+      this.prisma.supplier.findMany({ where, orderBy: { createdAt: 'desc' } }),
+      this.aggregateBySupplier(),
+    ]);
+    return suppliers.map((s) => {
+      const a = agg.get(s.id) ?? { receivedTotal: 0, paidTotal: 0, orderCount: 0 };
+      return {
         id: s.id,
         name: s.name,
         phone: s.phone,
         contact: s.contact,
         remark: s.remark,
         active: s.active,
-        orderCount: s.purchaseOrders.length,
-        receivedTotal,
-        paidTotal: paidTotal._sum.amount ?? 0,
-        payable: receivedTotal - (paidTotal._sum.amount ?? 0),
-      });
-    }
-    return items;
+        orderCount: a.orderCount,
+        receivedTotal: a.receivedTotal,
+        paidTotal: a.paidTotal,
+        payable: a.receivedTotal - a.paidTotal,
+      };
+    });
   }
 
   async createSupplier(viewer: Viewer, dto: SupplierUpsertDto) {
@@ -183,7 +213,7 @@ export class PurchasesService {
         include: {
           supplier: { select: { name: true } },
           operator: { select: { name: true } },
-          items: { select: { id: true } },
+          items: { select: { qty: true, receivedQty: true, unitCost: true } },
           payments: { select: { amount: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -195,21 +225,30 @@ export class PurchasesService {
       total,
       page,
       pageSize,
-      items: orders.map((o) => ({
-        id: o.id,
-        orderNo: o.orderNo,
-        supplierId: o.supplierId,
-        supplierName: o.supplier.name,
-        status: o.status,
-        totalAmount: o.totalAmount,
-        paidAmount: o.payments.reduce((n, p) => n + p.amount, 0),
-        payableAmount: o.totalAmount - o.payments.reduce((n, p) => n + p.amount, 0),
-        remark: o.remark,
-        operatorName: o.operator?.name ?? null,
-        receivedAt: o.receivedAt,
-        createdAt: o.createdAt,
-        itemCount: o.items.length,
-      })),
+      items: orders.map((o) => {
+        const paidAmount = o.payments.reduce((n, p) => n + p.amount, 0);
+        const receivedAmount = this.receivedAmountOf(o.items);
+        const receivedQty = o.items.reduce((n, i) => n + i.receivedQty, 0);
+        const totalQty = o.items.reduce((n, i) => n + i.qty, 0);
+        return {
+          id: o.id,
+          orderNo: o.orderNo,
+          supplierId: o.supplierId,
+          supplierName: o.supplier.name,
+          status: o.status,
+          totalAmount: o.totalAmount,
+          receivedAmount,
+          receivedQty,
+          totalQty,
+          paidAmount,
+          payableAmount: receivedAmount - paidAmount,
+          remark: o.remark,
+          operatorName: o.operator?.name ?? null,
+          receivedAt: o.receivedAt,
+          createdAt: o.createdAt,
+          itemCount: o.items.length,
+        };
+      }),
     };
   }
 
@@ -226,6 +265,7 @@ export class PurchasesService {
     });
     if (!order) throw new NotFoundException('采购单不存在');
     const paidAmount = order.payments.reduce((n, p) => n + p.amount, 0);
+    const receivedAmount = this.receivedAmountOf(order.items);
     return {
       id: order.id,
       orderNo: order.orderNo,
@@ -233,8 +273,11 @@ export class PurchasesService {
       supplierName: order.supplier.name,
       status: order.status,
       totalAmount: order.totalAmount,
+      receivedAmount,
+      receivedQty: order.items.reduce((n, i) => n + i.receivedQty, 0),
+      totalQty: order.items.reduce((n, i) => n + i.qty, 0),
       paidAmount,
-      payableAmount: order.totalAmount - paidAmount,
+      payableAmount: receivedAmount - paidAmount,
       remark: order.remark,
       operatorName: order.operator?.name ?? null,
       receivedAt: order.receivedAt,
@@ -244,8 +287,12 @@ export class PurchasesService {
     };
   }
 
-  /** 采购入库：库存增加 + 采购流水 + 更新最近进价与移动加权平均成本 */
-  async receive(viewer: Viewer, id: string) {
+  /**
+   * 采购入库：支持分批到货。
+   * dto.items 不传 = 按全部剩余待收数量入库；传则按行入库（数量 ≤ 剩余待收）。
+   * 全部收齐后单据状态置为 RECEIVED，部分到货保持 DRAFT 可继续入库（也可按已入库部分付款）。
+   */
+  async receive(viewer: Viewer, id: string, dto?: ReceivePurchaseDto) {
     this.requireBoss(viewer);
     const order = await this.prisma.purchaseOrder.findUnique({
       where: { id },
@@ -254,8 +301,33 @@ export class PurchasesService {
     if (!order) throw new NotFoundException('采购单不存在');
     if (order.status !== 'DRAFT') throw new BadRequestException('仅「待入库」状态可入库');
 
-    await this.prisma.$transaction(async (tx) => {
+    // 计划入库量：默认全部剩余
+    const plan = new Map<string, { item: (typeof order.items)[number]; qty: number }>();
+    if (dto?.items?.length) {
+      const itemMap = new Map(order.items.map((i) => [i.id, i]));
+      for (const r of dto.items) {
+        const item = itemMap.get(r.itemId);
+        if (!item) throw new BadRequestException('入库明细与采购单不符');
+        const rest = item.qty - item.receivedQty;
+        if (r.qty > rest) {
+          throw new BadRequestException(`「${item.productName}」最多还可入库 ${rest}`);
+        }
+        plan.set(r.itemId, { item, qty: r.qty });
+      }
+    } else {
       for (const item of order.items) {
+        const rest = item.qty - item.receivedQty;
+        if (rest > 0) plan.set(item.id, { item, qty: rest });
+      }
+    }
+    if (plan.size === 0) {
+      throw new BadRequestException('没有待入库的数量');
+    }
+
+    let receivedNow = 0;
+    await this.prisma.$transaction(async (tx) => {
+      for (const { item, qty } of plan.values()) {
+        receivedNow += qty * item.unitCost;
         const sku = await tx.sku.findUnique({
           where: { id: item.skuId },
           include: { inventory: true },
@@ -264,14 +336,14 @@ export class PurchasesService {
         const before = sku.inventory?.qty ?? 0;
         const row = await tx.inventory.upsert({
           where: { skuId: item.skuId },
-          create: { skuId: item.skuId, qty: before + item.qty },
-          update: { qty: { increment: item.qty } },
+          create: { skuId: item.skuId, qty: before + qty },
+          update: { qty: { increment: qty } },
         });
         await tx.inventoryLog.create({
           data: {
             skuId: item.skuId,
             type: 'PURCHASE',
-            change: item.qty,
+            change: qty,
             after: row.qty,
             refNo: order.orderNo,
             note: `采购入库 @${(item.unitCost / 100).toFixed(2)}元`,
@@ -282,47 +354,66 @@ export class PurchasesService {
           where: { id: item.skuId },
           data: {
             lastCost: item.unitCost,
-            costAvg: nextCostAvg(before, sku.costAvg, item.qty, item.unitCost),
+            costAvg: nextCostAvg(before, sku.costAvg, qty, item.unitCost),
           },
         });
+        await tx.purchaseItem.update({
+          where: { id: item.id },
+          data: { receivedQty: { increment: qty } },
+        });
       }
+      // 全部收齐 → RECEIVED；部分到货保持 DRAFT 可继续入库
+      const fresh = await tx.purchaseOrder.findUnique({
+        where: { id },
+        include: { items: { select: { qty: true, receivedQty: true } } },
+      });
+      const allReceived = (fresh?.items ?? []).every((i) => i.receivedQty >= i.qty);
       await tx.purchaseOrder.update({
         where: { id },
-        data: { status: 'RECEIVED', receivedAt: new Date() },
+        data: allReceived ? { status: 'RECEIVED', receivedAt: new Date() } : {},
       });
     });
 
     await this.audit.log(viewer.id, 'purchase.receive', order.orderNo, {
       supplier: order.supplier.name,
-      totalAmount: order.totalAmount,
-      items: order.items.length,
+      receivedAmount: receivedNow,
+      lines: plan.size,
     });
     return this.getOrder(viewer, id);
   }
 
   async cancel(viewer: Viewer, id: string) {
     this.requireBoss(viewer);
-    const order = await this.prisma.purchaseOrder.findUnique({ where: { id } });
+    const order = await this.prisma.purchaseOrder.findUnique({
+      where: { id },
+      include: { items: { select: { receivedQty: true } } },
+    });
     if (!order) throw new NotFoundException('采购单不存在');
     if (order.status !== 'DRAFT') throw new BadRequestException('仅「待入库」状态可取消');
+    if (order.items.some((i) => i.receivedQty > 0)) {
+      throw new BadRequestException('该单已有入库数量（分批到货），不能取消；可付清已入库部分后联系供应商');
+    }
     await this.prisma.purchaseOrder.update({ where: { id }, data: { status: 'CANCELLED' } });
     await this.audit.log(viewer.id, 'purchase.cancel', order.orderNo, null);
     return this.getOrder(viewer, id);
   }
 
-  /** 记录付款：只能付已入库单，累计付款不超采购总额 */
+  /** 记录付款：按已入库金额为付款上限（支持部分到货时先付已收部分） */
   async addPayment(viewer: Viewer, id: string, dto: PurchasePaymentDto) {
     this.requireBoss(viewer);
     const order = await this.prisma.purchaseOrder.findUnique({
       where: { id },
-      include: { payments: true },
+      include: { payments: true, items: { select: { receivedQty: true, unitCost: true } } },
     });
     if (!order) throw new NotFoundException('采购单不存在');
-    if (order.status !== 'RECEIVED') throw new BadRequestException('仅「已入库」的采购单可付款');
+    const receivedAmount = this.receivedAmountOf(order.items);
+    if (receivedAmount <= 0) {
+      throw new BadRequestException('采购单还没有入库数量，入库后再付款');
+    }
     const paid = order.payments.reduce((n, p) => n + p.amount, 0);
-    if (paid + dto.amount > order.totalAmount) {
+    if (paid + dto.amount > receivedAmount) {
       throw new BadRequestException(
-        `付款超出应付余额（应付 ${(order.totalAmount - paid) / 100} 元）`,
+        `付款超出已入库应付余额（已入库 ${(receivedAmount / 100).toFixed(2)} 元，未付 ${(Math.max(0, receivedAmount - paid) / 100).toFixed(2)} 元）`,
       );
     }
     await this.prisma.purchasePayment.create({
@@ -338,32 +429,25 @@ export class PurchasesService {
     return this.getOrder(viewer, id);
   }
 
-  /** 应付汇总：按供应商聚合（已入库未付清部分） */
+  /** 应付汇总：按供应商聚合（按已入库金额口径，含 DRAFT 单的部分到货） */
   async payables(viewer: Viewer) {
     this.requireBoss(viewer);
-    const suppliers = await this.prisma.supplier.findMany({ where: { active: true } });
+    const [suppliers, agg] = await Promise.all([
+      this.prisma.supplier.findMany({ where: { active: true } }),
+      this.aggregateBySupplier(),
+    ]);
     const items = [];
     for (const s of suppliers) {
-      const agg = await this.prisma.purchaseOrder.aggregate({
-        where: { supplierId: s.id, status: 'RECEIVED' },
-        _sum: { totalAmount: true },
-        _count: true,
-      });
-      const paid = await this.prisma.purchasePayment.aggregate({
-        where: { order: { supplierId: s.id } },
-        _sum: { amount: true },
-      });
-      const receivedTotal = agg._sum.totalAmount ?? 0;
-      const paidTotal = paid._sum.amount ?? 0;
-      if (receivedTotal === 0 && paidTotal === 0) continue;
+      const a = agg.get(s.id);
+      if (!a || (a.receivedTotal === 0 && a.paidTotal === 0)) continue;
       items.push({
         supplierId: s.id,
         supplierName: s.name,
         phone: s.phone,
-        receivedTotal,
-        paidTotal,
-        payable: receivedTotal - paidTotal,
-        orderCount: agg._count,
+        receivedTotal: a.receivedTotal,
+        paidTotal: a.paidTotal,
+        payable: a.receivedTotal - a.paidTotal,
+        orderCount: a.orderCount,
       });
     }
     return items.sort((a, b) => b.payable - a.payable);

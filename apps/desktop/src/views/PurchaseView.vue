@@ -58,16 +58,45 @@ async function openDetail(id: string) {
   detailVisible.value = true;
 }
 
-async function doReceive(o: PurchaseOrderDto) {
-  await ElMessageBox.confirm(
-    `确认采购单 ${o.orderNo} 已到货？入库后将增加库存并更新商品成本（合计 ${money(o.totalAmount)}）。`,
-    '采购入库',
-    { type: 'warning', confirmButtonText: '确认入库' },
-  );
-  await receivePurchase(o.id);
-  ElMessage.success('入库成功');
-  void loadOrders();
-  if (detailVisible.value && detail.value?.id === o.id) detail.value = await getPurchaseOrder(o.id);
+// 分批入库：按行编辑本次实收数量（默认 = 剩余待收）
+const receiveVisible = ref(false);
+const receiveTarget = ref<PurchaseOrderDto | null>(null);
+const receiveQty = ref<Record<string, number>>({});
+const receiveSubmitting = ref(false);
+
+function openReceive(o: PurchaseOrderDto) {
+  receiveTarget.value = o;
+  const map: Record<string, number> = {};
+  for (const item of o.items ?? []) {
+    map[item.id] = Math.max(0, item.qty - item.receivedQty);
+  }
+  receiveQty.value = map;
+  receiveVisible.value = true;
+}
+
+async function confirmReceive() {
+  const o = receiveTarget.value;
+  if (!o) return;
+  const items = (o.items ?? [])
+    .map((item) => ({ itemId: item.id, qty: receiveQty.value[item.id] ?? 0 }))
+    .filter((r) => r.qty > 0);
+  if (items.length === 0) {
+    ElMessage.warning('本次入库数量为 0，请填写各行的实收数量');
+    return;
+  }
+  receiveSubmitting.value = true;
+  try {
+    await receivePurchase(o.id, { items });
+    ElMessage.success('入库成功');
+    receiveVisible.value = false;
+    void loadOrders();
+    void loadSuppliers();
+    if (detailVisible.value && detail.value?.id === o.id) detail.value = await getPurchaseOrder(o.id);
+  } catch {
+    // 拦截器已提示
+  } finally {
+    receiveSubmitting.value = false;
+  }
 }
 
 async function doCancel(o: PurchaseOrderDto) {
@@ -314,6 +343,12 @@ onMounted(() => {
           <el-table-column label="采购额" width="100" align="right">
             <template #default="{ row }">{{ money(row.totalAmount) }}</template>
           </el-table-column>
+          <el-table-column label="已入库" width="110" align="right">
+            <template #default="{ row }">
+              {{ money(row.receivedAmount ?? 0) }}
+              <span v-if="row.totalQty" class="receive-progress">{{ row.receivedQty ?? 0 }}/{{ row.totalQty }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="已付" width="100" align="right">
             <template #default="{ row }">{{ money(row.paidAmount) }}</template>
           </el-table-column>
@@ -328,9 +363,11 @@ onMounted(() => {
           <el-table-column label="操作" width="250" align="center">
             <template #default="{ row }">
               <el-button size="small" @click="openDetail(row.id)">详情</el-button>
-              <el-button v-if="row.status === 'DRAFT'" size="small" type="success" @click="doReceive(row)">入库</el-button>
-              <el-button v-if="row.status === 'RECEIVED' && row.payableAmount > 0" size="small" type="primary" @click="openPay(row)">付款</el-button>
-              <el-button v-if="row.status === 'DRAFT'" size="small" type="danger" plain @click="doCancel(row)">取消</el-button>
+              <el-button v-if="row.status === 'DRAFT'" size="small" type="success" @click="openReceive(row)">
+                {{ (row.receivedQty ?? 0) > 0 ? '继续入库' : '入库' }}
+              </el-button>
+              <el-button v-if="(row.receivedAmount ?? 0) > 0 && row.payableAmount > 0" size="small" type="primary" @click="openPay(row)">付款</el-button>
+              <el-button v-if="row.status === 'DRAFT' && !(row.receivedQty ?? 0)" size="small" type="danger" plain @click="doCancel(row)">取消</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -497,6 +534,40 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- 分批入库 -->
+    <el-dialog v-model="receiveVisible" title="采购入库（支持分批到货）" width="640px" :close-on-click-modal="false">
+      <p v-if="receiveTarget" class="tip">
+        {{ receiveTarget.orderNo }} · {{ receiveTarget.supplierName }} · 支持多次到货，全部收齐后自动完成
+      </p>
+      <el-table v-if="receiveTarget" :data="receiveTarget.items" size="small" border max-height="360">
+        <el-table-column label="商品" min-width="180">
+          <template #default="{ row }">
+            {{ row.productName }}<span v-if="row.spec" class="tip"> {{ row.spec }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="订购" width="70" align="center" prop="qty" />
+        <el-table-column label="已收" width="70" align="center" prop="receivedQty" />
+        <el-table-column label="本次实收" width="160" align="center">
+          <template #default="{ row }">
+            <el-input-number
+              v-model="receiveQty[row.id]"
+              :min="0"
+              :max="row.qty - row.receivedQty"
+              size="small"
+              :disabled="row.qty - row.receivedQty === 0"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="单价" width="90" align="right">
+          <template #default="{ row }">{{ money(row.unitCost) }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="receiveVisible = false">取消</el-button>
+        <el-button type="primary" :loading="receiveSubmitting" @click="confirmReceive">确认入库</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 采购单详情 -->
     <el-drawer v-model="detailVisible" :title="detail ? `采购单 ${detail.orderNo}` : ''" size="560px">
       <template v-if="detail">
@@ -545,9 +616,11 @@ onMounted(() => {
         <el-empty v-else description="暂无付款" :image-size="60" />
 
         <div class="drawer-actions">
-          <el-button v-if="detail.status === 'DRAFT'" type="success" @click="doReceive(detail)">确认入库</el-button>
-          <el-button v-if="detail.status === 'RECEIVED' && detail.payableAmount > 0" type="primary" @click="openPay(detail)">登记付款</el-button>
-          <el-button v-if="detail.status === 'DRAFT'" type="danger" plain @click="doCancel(detail)">取消采购</el-button>
+          <el-button v-if="detail.status === 'DRAFT'" type="success" @click="openReceive(detail)">
+            {{ (detail.receivedQty ?? 0) > 0 ? '继续入库' : '确认入库' }}
+          </el-button>
+          <el-button v-if="(detail.receivedAmount ?? 0) > 0 && detail.payableAmount > 0" type="primary" @click="openPay(detail)">登记付款</el-button>
+          <el-button v-if="detail.status === 'DRAFT' && !(detail.receivedQty ?? 0)" type="danger" plain @click="doCancel(detail)">取消采购</el-button>
         </div>
       </template>
     </el-drawer>
@@ -598,6 +671,11 @@ onMounted(() => {
 .pay-pending {
   color: #eb3b5a;
   font-weight: 600;
+}
+.receive-progress {
+  color: #a4b0be;
+  font-size: 12px;
+  margin-left: 4px;
 }
 .spec {
   color: #a4b0be;

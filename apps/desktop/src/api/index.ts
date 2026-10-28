@@ -172,8 +172,9 @@ export const getPurchaseOrder = (id: string) =>
 export const createPurchase = (data: CreatePurchaseInput) =>
   http.post<never, PurchaseOrderDto>('/purchases/orders', data);
 
-export const receivePurchase = (id: string) =>
-  http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/receive`);
+/** 分批入库：items 不传 = 按全部剩余待收数量入库 */
+export const receivePurchase = (id: string, data?: { items: { itemId: string; qty: number }[] }) =>
+  http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/receive`, data);
 
 export const cancelPurchase = (id: string) =>
   http.post<never, PurchaseOrderDto>(`/purchases/orders/${id}/cancel`);

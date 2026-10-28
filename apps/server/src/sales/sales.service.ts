@@ -239,13 +239,18 @@ export class SalesService {
           if (fresh.balance < balancePaid) {
             throw new BadRequestException(`会员储值余额不足（剩 ${fresh.balance}）`);
           }
-          const updated = await tx.member.update({
-            where: { id: member.id },
-            data: {
-              ...(balancePaid > 0 ? { balance: { decrement: balancePaid } } : {}),
-              ...(pointsChange !== 0 ? { points: { increment: pointsChange } } : {}),
-            },
-          });
+          // DB CHECK 约束兜底并发窗口：扣成负数时数据库拒绝，翻译为友好提示
+          const updated = await tx.member
+            .update({
+              where: { id: member.id },
+              data: {
+                ...(balancePaid > 0 ? { balance: { decrement: balancePaid } } : {}),
+                ...(pointsChange !== 0 ? { points: { increment: pointsChange } } : {}),
+              },
+            })
+            .catch(() => {
+              throw new BadRequestException('会员储值余额/积分不足或正在变动，请刷新后重试');
+            });
           await tx.memberTxn.create({
             data: {
               memberId: member.id,

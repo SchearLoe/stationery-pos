@@ -6,6 +6,7 @@ import {
   CreatePurchaseDto,
   ListPurchasesQuery,
   PurchasePaymentDto,
+  ReceivePurchaseDto,
   SupplierUpsertDto,
 } from './dto/purchases.dto';
 
@@ -81,8 +82,12 @@ export class PurchasesController {
   }
 
   @Post('orders/:id/receive')
-  receive(@CurrentUser() user: { id: string; role: 'BOSS' | 'CASHIER' }, @Param('id') id: string) {
-    return this.purchases.receive(user, id);
+  receive(
+    @CurrentUser() user: { id: string; role: 'BOSS' | 'CASHIER' },
+    @Param('id') id: string,
+    @Body() dto?: ReceivePurchaseDto,
+  ) {
+    return this.purchases.receive(user, id, dto);
   }
 
   @Post('orders/:id/cancel')
